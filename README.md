@@ -11,7 +11,97 @@ tb text
 
 **64MB RAM** with Lightpanda vs **829MB** with Chrome. Screenshots work on both engines — Lightpanda uses a built-in satori renderer (DOM to SVG to PNG, no browser needed).
 
+## The Number System
+
+The core feature for AI agents. Every interactive element on the page gets a stable number. Use the number to click it — no CSS selectors needed.
+
+```bash
+tb elements                    # List all interactive elements with numbers
+```
+```
+    1  input   you@example.com
+    2  input   Password
+    3  button  Sign In
+    4  button  Continue with Google
+    5  link    Forgot password?
+    6  link    Sign Up
+```
+
+```bash
+tb tap 3                       # Click element #3 (Sign In)
+tb tap 1                       # Focus element #1 (email input)
+tb type '#email' user@test.com # Type into it
+```
+
+`tb annotate` takes a screenshot with floating numbered badges overlaid on each element — same numbers as `tb elements`, but visual. Badges use `position:fixed` + `z-index:999999` so they never disrupt page layout.
+
+```bash
+tb annotate ./login.png        # Screenshot with numbered overlays
+```
+
+`tb clear` handles React controlled inputs (where `.value = ''` doesn't work):
+
+```bash
+tb clear '#email'              # React-compatible clear (dispatches native input event)
+tb type '#email' new@value.com # Type fresh
+```
+
+## Named Sessions & Viewport Presets
+
+Name sessions so parallel agents don't collide:
+
+```bash
+tb open http://app.com/login -e c -n checkout --new   # Named Chromium session
+tb --session checkout elements                          # Use by name
+tb --session checkout tap 3                             # Click by name
+tb ps                                                   # Shows names in list
+tb kill checkout                                        # Kill by name
+```
+
+Set viewport size with presets or custom dimensions:
+
+```bash
+tb -w fhd open <url>           # 1920x1080 (Full HD)
+tb -w hd open <url>            # 1280x720
+tb -w mac open <url>           # 1440x900 (MacBook Pro)
+tb -w air open <url>           # 1470x956 (MacBook Air M2)
+tb -w mobile open <url>        # 390x844 (iPhone 14/15)
+tb -w ipad open <url>          # 1024x1366 (iPad Pro)
+tb -w 1440x900 open <url>     # Custom WxH
+```
+
+## Agent Workflow
+
+The typical flow for an AI agent doing QA or testing:
+
+```bash
+# 1. Start a named session with Chromium at full HD
+tb stop
+tb -w fhd open http://localhost:3000/login -e c -n test --new
+
+# 2. See what's on the page
+tb --session test elements
+
+# 3. Fill a login form by number
+tb --session test tap 1                            # Focus email
+tb --session test type '#email' user@test.com
+tb --session test tap 2                            # Focus password
+tb --session test type '#password' secret123
+tb --session test tap 3                            # Click Sign In
+
+# 4. Wait for redirect, verify
+sleep 3
+tb --session test url                              # Check URL changed
+tb --session test screenshot /tmp/dashboard.png    # Visual verify
+tb --session test annotate /tmp/annotated.png      # See what's clickable
+
+# 5. Clean up
+tb kill test
+```
+
 ## Why
+
+
 
 Every AI agent needs a browser. The options are all bad:
 
@@ -25,8 +115,8 @@ Every AI agent needs a browser. The options are all bad:
 
 ```bash
 # Clone and link
-git clone https://github.com/user/tiny-browser.git
-cd tiny-browser
+git clone https://github.com/hartmantexas/tb.git
+cd tb
 bun install
 bun link
 
@@ -46,7 +136,9 @@ If you already have Chrome/Brave/Arc installed, `tb` auto-detects them. No extra
 ```bash
 tb open http://localhost:3000          # Navigate (starts daemon + engine automatically)
 tb open http://example.com --new       # New session
-tb open http://api.dev --engine chromium  # Force specific engine
+tb open http://api.dev -e c            # Force Chromium (-e lp for Lightpanda)
+tb open http://app.com -e c -n mytest  # Named session
+tb -w fhd open http://app.com -e c    # Full HD viewport
 ```
 
 ### Screenshots
@@ -62,7 +154,15 @@ Screenshots work on **both engines**:
 - **Chromium**: pixel-perfect via CDP `Page.captureScreenshot`
 - **Lightpanda**: DOM-to-image via satori + resvg (no browser rendering needed)
 
-### Interaction
+### Element Interaction (Number System)
+```bash
+tb elements                            # List numbered interactive elements
+tb tap <number>                        # Click element by its number
+tb annotate [path]                     # Screenshot with floating number badges
+tb clear <selector>                    # Clear input (React-compatible)
+```
+
+### Direct Interaction
 ```bash
 tb click "button.submit"               # Click by CSS selector
 tb click "#login"                      # Click by ID
@@ -83,8 +183,8 @@ tb cookies                             # List cookies
 
 ### Session Management
 ```bash
-tb ps                                  # List all active sessions
-tb kill <session-id>                   # Kill one session
+tb ps                                  # List all active sessions (shows names)
+tb kill <id-or-name>                   # Kill by session ID or name
 tb kill-all                            # Kill all sessions
 tb status                              # Daemon status (engines, sessions, uptime)
 tb stop                                # Stop daemon + all engines
@@ -211,26 +311,26 @@ Your Agent / Code
 `tb` is designed for many agents running simultaneously:
 
 ```bash
-# Agent 1
-tb --new --json open http://app.com/page1
-# {"sessionId":"abc123","engine":"lightpanda"}
-
+# Agent 1 — named session
+tb open http://app.com/page1 -e c -n agent1 --new
 # Agent 2 (at the same time)
-tb --new --json open http://app.com/page2
-# {"sessionId":"def456","engine":"lightpanda"}
+tb open http://app.com/page2 -e c -n agent2 --new
 
-# Each agent works on their own session
-tb --session abc123 click ".button"
-tb --session def456 screenshot ./page2.png
+# Each agent works on their own session by name
+tb --session agent1 elements
+tb --session agent1 tap 3
+tb --session agent2 screenshot ./page2.png
+tb --session agent2 annotate ./page2-annotated.png
 
 # See everything running
 tb ps
-# ID         ENGINE       CREATED        LAST USED
-# abc123     lightpanda   2m ago         just now
-# def456     lightpanda   1m ago         just now
+# ID         NAME             ENGINE       CREATED        LAST USED
+# abc123     agent1           chromium     2m ago         just now
+# def456     agent2           chromium     1m ago         just now
 
-# Agent 1 cleans up their session only
-tb kill abc123
+# Clean up by name
+tb kill agent1
+tb kill agent2
 ```
 
 ## Configuration
