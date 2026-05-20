@@ -1,0 +1,52 @@
+{
+  "name": "tiny-browser",
+  "version": "0.1.0",
+  "description": "Agent-first browser. Lightpanda for speed, Chromium for pixels.",
+  "type": "module",
+  "bin": {
+    "tb": "./bin/tb"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "bun build ./src/cli.ts --outdir ./dist --target node",
+    "dev": "bun run src/cli.ts",
+    "start": "bun run src/daemon.ts --daemon"
+  },
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/user/tiny-browser"
+  },
+  "engines": {
+    "bun": ">=1.0.0"
+  },
+  "files": [
+    "dist",
+    "bin",
+    "src"
+  ],
+  "keywords": [
+    "browser",
+    "headless",
+    "agent",
+    "lightpanda",
+    "chromium",
+    "cdp",
+    "automation",
+    "screenshot"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@resvg/resvg-js": "^2.6.2",
+    "@takumi-rs/core": "^1.1.2",
+    "satori": "^0.26.0",
+    "satori-html": "^0.3.2"
+  }
+}
