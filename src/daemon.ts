@@ -18,6 +18,7 @@ import { loadConfig } from "./config.js";
 interface ManagedSession {
   id: string;
   name?: string;
+  group?: string;
   session: Session;
   engineProcess: EngineProcess;
   cdp: CDPClient;
@@ -40,6 +41,7 @@ export async function startDaemon(): Promise<void> {
   const config = loadConfig();
   const sessions = new Map<string, ManagedSession>();
   const engineProcesses = new Map<string, EngineProcess>();
+  const browserContexts = new Map<string, string>(); // group → browserContextId
   const startTime = Date.now();
   let lastActivity = Date.now();
 
@@ -94,6 +96,7 @@ export async function startDaemon(): Promise<void> {
           sessions: Array.from(sessions.entries()).map(([id, s]) => ({
             id,
             ...(s.name ? { name: s.name } : {}),
+            ...(s.group ? { group: s.group } : {}),
             engine: s.engineProcess.type,
             createdAt: s.createdAt.toISOString(),
             lastUsedAt: s.lastUsedAt.toISOString(),
@@ -123,20 +126,25 @@ export async function startDaemon(): Promise<void> {
           url?: string;
           needsScreenshot?: boolean;
           name?: string;
+          group?: string;
+          visible?: boolean;
         };
         const engineType = body.engine ?? "auto";
         const needsScreenshot = body.needsScreenshot ?? false;
+        const visible = body.visible ?? false;
 
         const engine = await resolveEngine(engineType, needsScreenshot);
 
-        // Check if we already have a running engine of this type
-        let ep = engineProcesses.get(engine.type);
+        // Visible sessions get their own engine instance (non-headless Chrome)
+        const engineKey = visible ? `${engine.type}-visible` : engine.type;
+        let ep = engineProcesses.get(engineKey);
         if (!ep || !isProcessRunning(ep.pid)) {
           ep = await engine.launch({
             width: config.viewport.width,
             height: config.viewport.height,
+            headless: !visible,
           });
-          engineProcesses.set(engine.type, ep);
+          engineProcesses.set(engineKey, ep);
         }
 
         // Create a new target (tab)
@@ -168,6 +176,8 @@ export async function startDaemon(): Promise<void> {
 
         const session = new Session(cdp, engine.type);
         await session.init();
+        await session.enableEvents(); // Always capture events
+        session.enableDVR(); // Always log actions
 
         const sessionId = randomId();
 
@@ -178,6 +188,7 @@ export async function startDaemon(): Promise<void> {
         sessions.set(sessionId, {
           id: sessionId,
           name: body.name,
+          group: body.group,
           session,
           engineProcess: ep,
           cdp,
@@ -219,7 +230,9 @@ export async function startDaemon(): Promise<void> {
         const session = managed.session;
         const method_name = body.method as keyof Session;
 
-        if (typeof (session as any)[method_name] !== "function") {
+        // Some CLI method names map to different Session method names in the switch below
+        const methodAliases = new Set(["diffDom"]);
+        if (typeof (session as any)[method_name] !== "function" && !methodAliases.has(body.method)) {
           return Response.json(
             { error: `Unknown method: ${body.method}` },
             { status: 400 },
@@ -262,11 +275,26 @@ export async function startDaemon(): Promise<void> {
             await session.click(params.selector as string);
             result = { ok: true };
             break;
+          case "clickAt":
+            await session.clickAt(
+              params.x as number,
+              params.y as number,
+            );
+            result = { ok: true };
+            break;
           case "type":
             await session.type(
               params.selector as string,
               params.text as string,
             );
+            result = { ok: true };
+            break;
+          case "typeText":
+            await session.typeText(params.text as string);
+            result = { ok: true };
+            break;
+          case "keyPress":
+            await session.keyPress(params.key as string);
             result = { ok: true };
             break;
           case "select":
@@ -328,13 +356,81 @@ export async function startDaemon(): Promise<void> {
             await session.clearCookies();
             result = { ok: true };
             break;
+          case "setViewport":
+            await session.setViewport(params.width as number, params.height as number);
+            result = { ok: true };
+            break;
+          case "snapshot":
+            result = await session.snapshot(params as any);
+            break;
+          case "tapRef": {
+            const refs = params.refs as any[];
+            result = await session.tapRef(params.ref as string, refs);
+            break;
+          }
+          case "findElement": {
+            const fRefs = params.refs as any[];
+            result = session.findElement(params.query as string, fRefs);
+            break;
+          }
+          case "waitForSettled":
+            await session.waitForSettled(params.timeout as number | undefined);
+            result = { ok: true };
+            break;
+          case "enableIntercept":
+            await session.enableIntercept(params as any);
+            result = { ok: true };
+            break;
+          case "getCapturedRequests":
+            result = session.getCapturedRequests();
+            break;
+          case "getDVR":
+            result = session.getDVR(params.since as number | undefined);
+            break;
+          case "logDVR":
+            session.logDVR(params.type as string, params.data as Record<string, unknown>);
+            result = { ok: true };
+            break;
+          case "getAuthState":
+            result = await session.getAuthState();
+            break;
+          case "getEvents": {
+            await session.enableEvents();
+            result = session.getEvents();
+            break;
+          }
+          case "takeDomSnapshot":
+            result = await session.takeDomSnapshot();
+            break;
+          case "diffDom":
+            result = session.diffDomSnapshots(params.since as number | undefined);
+            break;
+          case "setAuthState":
+            await session.setAuthState(params as any);
+            result = { ok: true };
+            break;
           case "scroll":
             await session.scroll(
               params.direction as "down" | "up" | undefined,
               params.pixels as number | undefined,
+              params.x as number | undefined,
+              params.y as number | undefined,
             );
             result = { ok: true };
             break;
+          case "startScreencast":
+            await session.startScreencast(params as any);
+            result = { ok: true };
+            break;
+          case "stopScreencast":
+            await session.stopScreencast();
+            result = { ok: true };
+            break;
+          case "getLatestFrame": {
+            const frame = session.getLatestFrame();
+            result = frame ?? { base64: null, ts: 0 };
+            break;
+          }
           default:
             return Response.json(
               { error: `Unknown method: ${body.method}` },
@@ -343,6 +439,23 @@ export async function startDaemon(): Promise<void> {
         }
 
         return Response.json({ result });
+      }
+
+      // PATCH /session/:id — rename a session
+      if (method === "PATCH" && path.startsWith("/session/")) {
+        const sessionId = path.split("/session/")[1];
+        const body = (await req.json()) as { name?: string; group?: string };
+        let managed = sessions.get(sessionId);
+        if (!managed) {
+          for (const [, s] of sessions) {
+            if (s.name && s.name === sessionId) { managed = s; break; }
+          }
+        }
+        if (managed) {
+          if (body.name !== undefined) managed.name = body.name || undefined;
+          if (body.group !== undefined) managed.group = body.group || undefined;
+        }
+        return Response.json({ ok: true });
       }
 
       // DELETE /session/:id — close a specific session

@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 260">
+  <rect width="800" height="260" rx="10" fill="#0d0d0d"/>
+
+  <!-- Row 1 -->
+  <g transform="translate(20, 20)">
+    <!-- Read -->
+    <rect x="0" y="0" width="245" height="100" rx="10" fill="#1a1a1a" stroke="#1e1e1e" stroke-width="1"/>
+    <rect x="0" y="0" width="245" height="3" rx="1.5" fill="#4285f4"/>
+    <text x="18" y="30" font-family="SF Mono,monospace" font-size="14" font-weight="700" fill="#4285f4">tb read</text>
+    <text x="18" y="50" font-family="-apple-system,sans-serif" font-size="11" fill="#888">Site-aware extraction. GitHub,</text>
+    <text x="18" y="66" font-family="-apple-system,sans-serif" font-size="11" fill="#888">HN, or any page. One command.</text>
+    <text x="18" y="88" font-family="SF Mono,monospace" font-size="9" fill="#555">tb read github.com/owner/repo</text>
+
+    <!-- Elements -->
+    <rect x="260" y="0" width="245" height="100" rx="10" fill="#1a1a1a" stroke="#1e1e1e" stroke-width="1"/>
+    <rect x="260" y="0" width="245" height="3" rx="1.5" fill="#34a853"/>
+    <text x="278" y="30" font-family="SF Mono,monospace" font-size="14" font-weight="700" fill="#34a853">tb elements</text>
+    <text x="278" y="50" font-family="-apple-system,sans-serif" font-size="11" fill="#888">Every interactive element gets</text>
+    <text x="278" y="66" font-family="-apple-system,sans-serif" font-size="11" fill="#888">a number. Click by number.</text>
+    <text x="278" y="88" font-family="SF Mono,monospace" font-size="9" fill="#555">tb tap 3  # clicks Sign In</text>
+
+    <!-- Groups -->
+    <rect x="520" y="0" width="245" height="100" rx="10" fill="#1a1a1a" stroke="#1e1e1e" stroke-width="1"/>
+    <rect x="520" y="0" width="245" height="3" rx="1.5" fill="#e8b931"/>
+    <text x="538" y="30" font-family="SF Mono,monospace" font-size="14" font-weight="700" fill="#e8b931">tb groups</text>
+    <text x="538" y="50" font-family="-apple-system,sans-serif" font-size="11" fill="#888">Tabs in windows. Agents get</text>
+    <text x="538" y="66" font-family="-apple-system,sans-serif" font-size="11" fill="#888">whole groups. Parallel scrape.</text>
+    <text x="538" y="88" font-family="SF Mono,monospace" font-size="9" fill="#555">tb scrape --group research</text>
+  </g>
+
+  <!-- Row 2 -->
+  <g transform="translate(20, 140)">
+    <!-- Auto-extract -->
+    <rect x="0" y="0" width="245" height="100" rx="10" fill="#1a1a1a" stroke="#1e1e1e" stroke-width="1"/>
+    <rect x="0" y="0" width="245" height="3" rx="1.5" fill="#8ab4f8"/>
+    <text x="18" y="30" font-family="SF Mono,monospace" font-size="14" font-weight="700" fill="#8ab4f8">tb auto-extract</text>
+    <text x="18" y="50" font-family="-apple-system,sans-serif" font-size="11" fill="#888">Zero-config. Finds repeating items</text>
+    <text x="18" y="66" font-family="-apple-system,sans-serif" font-size="11" fill="#888">by structure. No selectors needed.</text>
+    <text x="18" y="88" font-family="SF Mono,monospace" font-size="9" fill="#555">30 items, fields: [title, link, ...]</text>
+
+    <!-- DOM diff -->
+    <rect x="260" y="0" width="245" height="100" rx="10" fill="#1a1a1a" stroke="#1e1e1e" stroke-width="1"/>
+    <rect x="260" y="0" width="245" height="3" rx="1.5" fill="#ea4335"/>
+    <text x="278" y="30" font-family="SF Mono,monospace" font-size="14" font-weight="700" fill="#ea4335">tb dom-diff</text>
+    <text x="278" y="50" font-family="-apple-system,sans-serif" font-size="11" fill="#888">What changed after an action?</text>
+    <text x="278" y="66" font-family="-apple-system,sans-serif" font-size="11" fill="#888">Auto-snapshots on every click.</text>
+    <text x="278" y="88" font-family="SF Mono,monospace" font-size="9" fill="#555">+3 added, -1 removed, ~2 changed</text>
+
+    <!-- Batch -->
+    <rect x="520" y="0" width="245" height="100" rx="10" fill="#1a1a1a" stroke="#1e1e1e" stroke-width="1"/>
+    <rect x="520" y="0" width="245" height="3" rx="1.5" fill="#ab47bc"/>
+    <text x="538" y="30" font-family="SF Mono,monospace" font-size="14" font-weight="700" fill="#ab47bc">tb batch</text>
+    <text x="538" y="50" font-family="-apple-system,sans-serif" font-size="11" fill="#888">Multiple commands, one call.</text>
+    <text x="538" y="66" font-family="-apple-system,sans-serif" font-size="11" fill="#888">Pipe, fan-out, parallel scrape.</text>
+    <text x="538" y="88" font-family="SF Mono,monospace" font-size="9" fill="#555">tb batch 'url ; scrape ; snap'</text>
+  </g>
+</svg>

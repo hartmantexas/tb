@@ -15,7 +15,7 @@ export interface TBConfig {
 }
 
 const DEFAULTS: TBConfig = {
-  defaultEngine: "lightpanda",
+  defaultEngine: "chromium",
   daemonTimeout: 30 * 60 * 1000,
   viewport: { width: 1280, height: 720 },
   screenshotDir: "/tmp",

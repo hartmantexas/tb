@@ -194,9 +194,9 @@ export class ChromiumEngine implements Engine {
 
     if (!existsSync(userDataDir)) mkdirSync(userDataDir, { recursive: true });
 
+    const headless = options.headless !== false; // default true
     const args = [
-      "--headless=new",
-      "--disable-gpu",
+      ...(headless ? ["--headless=new"] : []),
       "--no-sandbox",
       "--disable-dev-shm-usage",
       "--disable-extensions",
@@ -205,6 +205,7 @@ export class ChromiumEngine implements Engine {
       "--disable-sync",
       "--disable-translate",
       "--mute-audio",
+      "--autoplay-policy=no-user-gesture-required",
       "--no-first-run",
       `--remote-debugging-port=${port}`,
       `--window-size=${width},${height}`,

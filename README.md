@@ -1,12 +1,17 @@
-# tb — tiny browser
+<p align="center">
+  <img src="assets/hero.svg" alt="tb — tiny browser" width="100%"/>
+</p>
 
-Agent-first browser. Lightpanda for speed, Chromium for pixels.
+<p align="center">
+  <img src="assets/features.svg" alt="Features" width="100%"/>
+</p>
 
 ```bash
-tb open http://localhost:3000
-tb screenshot ./page.png --open
-tb click "button.submit"
-tb text
+tb read https://github.com/trending              # structured data from any site
+tb read https://github.com/owner/repo             # full README + metadata
+tb elements && tb tap 3                           # number system — no selectors
+tb batch 'url ; scrape ; screenshot /tmp/s.png'   # multi-command, one call
+tb scrape --group research                        # hit all tabs at once
 ```
 
 **64MB RAM** with Lightpanda vs **829MB** with Chrome. Screenshots work on both engines — Lightpanda uses a built-in satori renderer (DOM to SVG to PNG, no browser needed).
@@ -71,6 +76,10 @@ tb -w 1440x900 open <url>     # Custom WxH
 ```
 
 ## Agent Workflow
+
+<p align="center">
+  <img src="assets/flow.svg" alt="Agent workflow" width="100%"/>
+</p>
 
 The typical flow for an AI agent doing QA or testing:
 
@@ -272,21 +281,9 @@ curl http://localhost:7171/cookies
 
 ## Architecture
 
-```
-Your Agent / Code
-       |
-       v  (CLI, Library, or HTTP API)
-    tb CLI
-       |
-       v  (Unix socket IPC)
-    tb daemon  (persistent, auto-starts, auto-shuts down after 30min idle)
-       |
-       ├──> Lightpanda (64MB RAM, Zig, DOM-only, CDP protocol)
-       |         |
-       |         └──> satori + resvg (DOM → SVG → PNG for screenshots)
-       |
-       └──> Chromium (829MB RAM, pixel-perfect rendering)
-```
+<p align="center">
+  <img src="assets/architecture.svg" alt="Architecture" width="100%"/>
+</p>
 
 **Key design decisions:**
 
@@ -331,6 +328,129 @@ tb ps
 # Clean up by name
 tb kill agent1
 tb kill agent2
+```
+
+## Smart Reading & Scraping
+
+`tb read` is site-aware extraction in one command. No selectors, no configuration.
+
+```bash
+# GitHub repo — full README + metadata
+tb read https://github.com/D4Vinci/Scrapling
+# → ## D4Vinci/Scrapling
+# → Stars: 56.7k  Forks: 5.5k  Lang: Python
+# → (full README text)
+
+# Multiple repos at once (one tab, sequential)
+tb read https://github.com/D4Vinci/Scrapling https://github.com/microsoft/markitdown https://github.com/anthropics/claude-code
+
+# GitHub trending
+tb read https://github.com/trending
+# → 15 repos with name, language, stars, description
+
+# Trending + follow top 5 for full READMEs
+tb read https://github.com/trending --follow 5
+
+# Hacker News
+tb read https://news.ycombinator.com
+# → 30 stories with title, URL, points, comments
+
+# Any page — smart extraction
+tb read https://example.com
+
+# JSON for pipelines
+tb read https://github.com/trending --json
+```
+
+### Other Scraping Commands
+
+```bash
+tb describe                        # Page type detection (form/list/table/article)
+tb auto-extract                    # Zero-config: finds repeating items automatically
+tb find-similar ".product"         # Find all structurally similar elements
+tb scrape                          # Reader-mode content extraction
+tb extract '{"titles":"h3"}'       # Extract by CSS selector schema
+```
+
+### Batch & Parallel
+
+```bash
+# Multiple commands, one call
+tb batch 'url ; title ; scrape ; screenshot /tmp/s.png' --json
+
+# Fan-out: extract links, open each as tab, scrape all
+tb pipe --links "a.story" --group stories --then scrape --limit 5
+```
+
+## Groups (Windows & Tabs)
+
+Sessions are tabs. Groups are windows. Agents get whole groups.
+
+```bash
+# Create sessions in groups
+tb open https://github.com/a -n repoA --group research --new
+tb open https://github.com/b -n repoB --group research --new
+
+# View and manage
+tb groups                          # Quick overview
+tb move repoA --group other        # Move tab between windows
+tb group rename research dev       # Rename group
+
+# Group-level commands — ALL tabs at once
+tb url --group research
+tb scrape --group research
+tb screenshot --group research
+tb eval "document.title" --group research
+
+# Watch a group
+tb watch --group research          # Focused window with group tabs only
+tb cc                              # Command center (grid of all windows)
+```
+
+## Semantic Interaction
+
+```bash
+tb snapshot -i                     # Accessibility tree with @e refs
+tb act "click sign in"             # Natural language action (no LLM, semantic match)
+tb tap-ref @e3                     # Click by ref
+tb chat "What is X?"               # Send message to AI on page, wait for response
+```
+
+## DOM Diffing
+
+Auto-snapshots on every navigation and click. See what changed:
+
+```bash
+tb dom-snapshot                    # Manual snapshot
+tb dom-diff                        # Structural diff vs previous
+# → +3 added (form, input#email, input#password)
+# → -1 removed (div.welcome)
+# → ~2 changed (nav.active, #cart: "0" → "1")
+```
+
+## Network Interception
+
+```bash
+tb intercept block "*.ads.*"                     # Block URL patterns
+tb intercept mock "/api/test" '{"status":"ok"}'  # Mock API responses
+tb intercept capture                             # View captured requests
+```
+
+## Recording & Replay
+
+```bash
+tb record my-flow --session x      # Record actions (Ctrl+C to stop)
+tb replay my-flow --session x      # Replay
+tb auth save github --session x    # Save cookies + localStorage
+tb auth load github --session x    # Restore into any session
+```
+
+## DVR & Events
+
+```bash
+tb history                         # Action log with timestamps
+tb history --since 60              # Last 60 seconds
+tb events                          # Live console, navigation, network errors
 ```
 
 ## Configuration

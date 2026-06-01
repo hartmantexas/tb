@@ -245,6 +245,10 @@ const EXTRACT_STYLED_TREE_JS = `(async () => {
 })()`;
 
 export class Session {
+  private screencastFrame: { base64: string; ts: number } | null = null;
+  private screencastActive = false;
+  private onScreencastFrame: ((base64: string) => void) | null = null;
+
   constructor(
     private cdp: CDPClient,
     private engineType: "lightpanda" | "chromium",
@@ -387,9 +391,204 @@ export class Session {
     }
   }
 
+  // --- Accessibility Tree ---
+
+  /** Get semantic snapshot — uses DOM + ARIA for reliability, AX tree as enhancement */
+  async snapshot(options: { interactive?: boolean; compact?: boolean; depth?: number } = {}): Promise<{
+    tree: string;
+    refs: Array<{ ref: string; role: string; name: string; selector: string; description?: string; value?: string }>;
+  }> {
+    // DOM-based approach with ARIA enrichment — works on all pages, no CDP domain dependencies
+    const result = (await this.cdp.send("Runtime.evaluate", {
+      expression: `(() => {
+        var refs = [], lines = [], seen = new Set();
+        var idx = 1;
+
+        function getRole(el) {
+          var r = el.getAttribute('role');
+          if (r) return r;
+          var tag = el.tagName;
+          if (tag === 'A') return 'link';
+          if (tag === 'BUTTON' || tag === 'SUMMARY') return 'button';
+          if (tag === 'INPUT') {
+            var t = el.type || 'text';
+            if (t === 'checkbox') return 'checkbox';
+            if (t === 'radio') return 'radio';
+            if (t === 'submit' || t === 'button') return 'button';
+            if (t === 'search') return 'searchbox';
+            return 'textbox';
+          }
+          if (tag === 'TEXTAREA') return 'textbox';
+          if (tag === 'SELECT') return 'combobox';
+          if (tag === 'NAV') return 'navigation';
+          if (tag === 'MAIN') return 'main';
+          if (tag === 'H1' || tag === 'H2' || tag === 'H3') return 'heading';
+          return '';
+        }
+
+        function getName(el) {
+          return el.getAttribute('aria-label')
+            || el.getAttribute('title')
+            || el.getAttribute('placeholder')
+            || el.getAttribute('alt')
+            || (el.tagName === 'INPUT' ? (el.labels?.[0]?.textContent?.trim() || '') : '')
+            || el.textContent?.trim()?.replace(/\\s+/g, ' ')?.slice(0, 60)
+            || '';
+        }
+
+        function getSel(el) {
+          if (el.id) return '#' + el.id;
+          if (el.name) return '[name="' + el.name + '"]';
+          if (el.getAttribute('data-testid')) return '[data-testid="' + el.getAttribute('data-testid') + '"]';
+          return el.tagName.toLowerCase();
+        }
+
+        function vis(el) {
+          try { if (getComputedStyle(el).display === 'none' || el.offsetParent === null) return false; } catch(e) { return false; }
+          var r = el.getBoundingClientRect();
+          return r.width > 2 && r.height > 2;
+        }
+
+        var interactive = ${options.interactive ? 'true' : 'false'};
+
+        // Walk semantic elements
+        var selectors = 'button, a[href], input, textarea, select, [role=button], [role=tab], [role=link], [role=menuitem], [contenteditable=true], summary, h1, h2, h3';
+        if (!interactive) selectors += ', nav, main, section, article, form';
+
+        document.querySelectorAll(selectors).forEach(el => {
+          if (!vis(el)) return;
+          var role = getRole(el);
+          if (!role) return;
+          var name = getName(el);
+          if (seen.has(role + ':' + name) && name) return;
+          if (name) seen.add(role + ':' + name);
+
+          var isInteractive = /^(button|link|textbox|searchbox|combobox|checkbox|radio|tab|menuitem|switch)$/.test(role);
+          var ref = '';
+          if (isInteractive) {
+            ref = '@e' + idx;
+            var r = el.getBoundingClientRect();
+            refs.push({
+              ref: ref,
+              role: role,
+              name: name.slice(0, 80),
+              selector: getSel(el),
+              value: el.value || '',
+              x: Math.round(r.x), y: Math.round(r.y),
+            });
+            idx++;
+          }
+
+          if (!interactive || isInteractive) {
+            var line = role + (ref ? ' ' + ref : '') + (name ? ' "' + name.slice(0,50) + '"' : '');
+            lines.push(line);
+          }
+        });
+
+        // Sort refs by visual position
+        refs.sort(function(a,b) { var dy = a.y - b.y; return Math.abs(dy) > 15 ? dy : a.x - b.x; });
+        for (var i = 0; i < refs.length; i++) refs[i].ref = '@e' + (i + 1);
+
+        return { tree: lines.join('\\n'), refs: refs };
+      })()`,
+      returnByValue: true,
+    })) as { result: { value: any } };
+
+    return result.result.value;
+  }
+
+  /** Click an element by ref (@e1) — uses selector from snapshot */
+  async tapRef(ref: string, refs: Array<{ ref: string; selector: string; role?: string; name?: string }>): Promise<{ ok: boolean; role?: string; name?: string }> {
+    const entry = refs.find(r => r.ref === ref);
+    if (!entry) return { ok: false };
+    this.logDVR("tapRef", { ref, name: entry.name });
+
+    await this.cdp.send("Runtime.evaluate", {
+      expression: `(() => {
+        var el = document.querySelector('${entry.selector.replace(/'/g, "\\'")}');
+        if (!el) return false;
+        el.scrollIntoViewIfNeeded?.();
+        el.focus();
+        el.click();
+        var r = el.getBoundingClientRect();
+        el.dispatchEvent(new MouseEvent('click', {bubbles:true, clientX:r.x+r.width/2, clientY:r.y+r.height/2}));
+        return true;
+      })()`,
+    });
+
+    return { ok: true, role: entry.role, name: entry.name };
+  }
+
+  /** Find element by semantic match — no LLM, instant string matching */
+  findElement(query: string, refs: Array<{ ref: string; role: string; name: string }>): string | null {
+    const q = query.toLowerCase().trim();
+
+    // 1. Exact name
+    let match = refs.find(r => r.name.toLowerCase() === q);
+    if (match) return match.ref;
+
+    // 2. Name contains query
+    match = refs.find(r => r.name.toLowerCase().includes(q));
+    if (match) return match.ref;
+
+    // 3. Query contains name (for short element names like "OK", "Go")
+    match = refs.find(r => r.name.length > 1 && q.includes(r.name.toLowerCase()));
+    if (match) return match.ref;
+
+    // 4. Role-aware: "sign in button" → button with "sign in"
+    for (const rw of ['button', 'link', 'textbox', 'input', 'checkbox', 'tab', 'search']) {
+      if (q.includes(rw)) {
+        const nameQ = q.replace(new RegExp(rw, 'g'), '').replace(/\b(the|a|an|click|tap|press)\b/g, '').trim();
+        if (nameQ.length > 1) {
+          match = refs.find(r => r.role.includes(rw === 'input' ? 'textbox' : rw) && r.name.toLowerCase().includes(nameQ));
+          if (match) return match.ref;
+        }
+      }
+    }
+
+    // 5. Fuzzy: best substring overlap
+    let best = 0, bestRef: string | null = null;
+    for (const r of refs) {
+      const name = r.name.toLowerCase();
+      if (!name) continue;
+      // Simple: count matching words
+      const qWords = q.split(/\s+/);
+      const nWords = name.split(/\s+/);
+      let hits = 0;
+      for (const qw of qWords) { if (nWords.some(nw => nw.includes(qw) || qw.includes(nw))) hits++; }
+      const score = hits / Math.max(qWords.length, 1);
+      if (score > 0.4 && score > best) { best = score; bestRef = r.ref; }
+    }
+
+    return bestRef;
+  }
+
+  /** Wait for content to settle — polls for stable text length */
+  async waitForSettled(timeout = 15000): Promise<void> {
+    const start = Date.now();
+    let lastLen = 0;
+    let stableCount = 0;
+    while (Date.now() - start < timeout) {
+      const result = (await this.cdp.send("Runtime.evaluate", {
+        expression: "document.body.innerText.length",
+        returnByValue: true,
+      })) as { result: { value: number } };
+      const len = result.result.value;
+      if (len === lastLen) {
+        stableCount++;
+        if (stableCount >= 3) return; // 3 stable checks = settled
+      } else {
+        stableCount = 0;
+        lastLen = len;
+      }
+      await new Promise(r => setTimeout(r, 500));
+    }
+  }
+
   // --- Navigation ---
 
   async goto(url: string): Promise<{ status: number; url: string }> {
+    this.logDVR("goto", { url });
     const loadPromise = this.cdp.once("Page.loadEventFired");
     const result = (await this.cdp.send("Page.navigate", { url })) as {
       frameId?: string;
@@ -501,6 +700,49 @@ export class Session {
       y: pos.y,
       button: "left",
       clickCount: 1,
+    });
+  }
+
+  async clickAt(x: number, y: number): Promise<void> {
+    this.logDVR("clickAt", { x, y });
+    await this.cdp.send("Runtime.evaluate", {
+      expression: `(() => {
+        var el = document.elementFromPoint(${x}, ${y});
+        if (!el) return;
+        var target = el.closest('a, button, [onclick], [role="button"], input, select, textarea, label, summary, details') || el;
+        if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT') target.focus();
+        target.click();
+      })()`,
+    });
+  }
+
+  async typeText(text: string): Promise<void> {
+    for (const char of text) {
+      await this.cdp.send("Input.dispatchKeyEvent", {
+        type: "keyDown",
+        text: char,
+        key: char,
+        unmodifiedText: char,
+      });
+      await this.cdp.send("Input.dispatchKeyEvent", {
+        type: "keyUp",
+        text: char,
+        key: char,
+      });
+    }
+  }
+
+  async keyPress(key: string): Promise<void> {
+    await this.cdp.send("Input.dispatchKeyEvent", {
+      type: "keyDown",
+      key,
+      code: key,
+      windowsVirtualKeyCode: key === "Enter" ? 13 : key === "Backspace" ? 8 : key === "Tab" ? 9 : key === "Escape" ? 27 : 0,
+    });
+    await this.cdp.send("Input.dispatchKeyEvent", {
+      type: "keyUp",
+      key,
+      code: key,
     });
   }
 
@@ -744,10 +986,17 @@ export class Session {
 
   // --- Wait ---
 
-  async scroll(direction: "down" | "up" = "down", pixels = 500): Promise<void> {
+  async scroll(direction: "down" | "up" = "down", pixels = 500, x?: number, y?: number): Promise<void> {
     const amount = direction === "down" ? pixels : -pixels;
-    await this.cdp.send("Runtime.evaluate", {
-      expression: `window.scrollBy(0, ${amount})`,
+    const cx = x ?? 640;
+    const cy = y ?? 360;
+    // CDP native wheel event — smooth, respects the scrollable container under cursor
+    await this.cdp.send("Input.dispatchMouseEvent", {
+      type: "mouseWheel",
+      x: cx,
+      y: cy,
+      deltaX: 0,
+      deltaY: amount,
     });
   }
 
@@ -806,9 +1055,432 @@ export class Session {
     await this.cdp.send("Network.clearBrowserCookies");
   }
 
+  // --- Network Interception ---
+
+  private interceptEnabled = false;
+  private blockPatterns: string[] = [];
+  private mockRules: Array<{ pattern: string; status: number; body: string; headers?: Record<string, string> }> = [];
+  private capturedRequests: Array<{ url: string; method: string; status?: number; body?: string; ts: number }> = [];
+
+  async enableIntercept(options?: { block?: string[]; mock?: Array<{ pattern: string; status?: number; body: string }> }): Promise<void> {
+    if (options?.block) this.blockPatterns.push(...options.block);
+    if (options?.mock) {
+      for (const m of options.mock) {
+        this.mockRules.push({ pattern: m.pattern, status: m.status || 200, body: m.body });
+      }
+    }
+
+    if (!this.interceptEnabled) {
+      this.interceptEnabled = true;
+      await this.cdp.send("Fetch.enable", {
+        patterns: [{ urlPattern: "*", requestStage: "Request" }],
+      });
+
+      this.cdp.on("Fetch.requestPaused", async (params: any) => {
+        const url = params.request.url as string;
+
+        // Check blocks
+        for (const pattern of this.blockPatterns) {
+          if (url.includes(pattern) || new RegExp(pattern.replace(/\*/g, '.*')).test(url)) {
+            await this.cdp.send("Fetch.failRequest", { requestId: params.requestId, reason: "BlockedByClient" }).catch(() => {});
+            return;
+          }
+        }
+
+        // Check mocks
+        for (const mock of this.mockRules) {
+          if (url.includes(mock.pattern) || new RegExp(mock.pattern.replace(/\*/g, '.*')).test(url)) {
+            const body = Buffer.from(mock.body).toString("base64");
+            await this.cdp.send("Fetch.fulfillRequest", {
+              requestId: params.requestId,
+              responseCode: mock.status,
+              responseHeaders: [{ name: "Content-Type", value: "application/json" }],
+              body,
+            }).catch(() => {});
+            return;
+          }
+        }
+
+        // Capture XHR/fetch responses for extraction
+        if (url.includes('/api/') || url.includes('/graphql')) {
+          this.capturedRequests.push({ url, method: params.request.method, ts: Date.now() });
+          if (this.capturedRequests.length > 200) this.capturedRequests.shift();
+        }
+
+        // Continue normally
+        await this.cdp.send("Fetch.continueRequest", { requestId: params.requestId }).catch(() => {});
+      });
+    }
+  }
+
+  getCapturedRequests(): typeof this.capturedRequests {
+    return this.capturedRequests.splice(0);
+  }
+
+  async setViewport(width: number, height: number): Promise<void> {
+    await this.cdp.send("Emulation.setDeviceMetricsOverride", {
+      width, height,
+      deviceScaleFactor: 1,
+      mobile: width < 768,
+    });
+  }
+
+  /** Get full auth state: cookies + localStorage + sessionStorage */
+  async getAuthState(): Promise<{
+    url: string;
+    cookies: Array<Record<string, unknown>>;
+    localStorage: Record<string, string>;
+    sessionStorage: Record<string, string>;
+  }> {
+    const [url, cookiesResult, storageResult] = await Promise.all([
+      this.url(),
+      this.cdp.send("Network.getAllCookies") as Promise<{ cookies: Array<Record<string, unknown>> }>,
+      this.cdp.send("Runtime.evaluate", {
+        expression: `({
+          localStorage: Object.fromEntries(Object.keys(localStorage).map(k => [k, localStorage.getItem(k)])),
+          sessionStorage: Object.fromEntries(Object.keys(sessionStorage).map(k => [k, sessionStorage.getItem(k)])),
+        })`,
+        returnByValue: true,
+      }) as Promise<{ result: { value: { localStorage: Record<string, string>; sessionStorage: Record<string, string> } } }>,
+    ]);
+    return {
+      url,
+      cookies: cookiesResult.cookies,
+      localStorage: storageResult.result.value.localStorage,
+      sessionStorage: storageResult.result.value.sessionStorage,
+    };
+  }
+
+  /** Restore auth state: set cookies + localStorage + sessionStorage */
+  // --- DVR (compressed action log) ---
+
+  private dvr: Array<{ ts: number; type: string; data: Record<string, unknown> }> = [];
+  private dvrEnabled = false;
+  private lastKnownUrl = "";
+  private lastKnownTitle = "";
+
+  enableDVR(): void {
+    if (this.dvrEnabled) return;
+    this.dvrEnabled = true;
+  }
+
+  logDVR(type: string, data: Record<string, unknown>): void {
+    if (!this.dvrEnabled) return;
+    // Enrich with page context — URL comes from goto(), title updated lazily
+    if (type === "goto" && data.url) this.lastKnownUrl = data.url as string;
+    const enriched = { ...data, pageUrl: this.lastKnownUrl };
+    this.dvr.push({ ts: Date.now(), type, data: enriched });
+    if (this.dvr.length > 2000) this.dvr.shift();
+    // Update title lazily (non-blocking)
+    this.cdp.send("Runtime.evaluate", { expression: "document.title", returnByValue: true })
+      .then((r: any) => { if (r?.result?.value) this.lastKnownTitle = r.result.value; })
+      .catch(() => {});
+    // Auto-snapshot on navigations and interactions (fire-and-forget)
+    if (type === "goto" || type === "tapRef" || type === "clickAt") {
+      // Delay slightly so the page has time to react
+      setTimeout(() => { this.takeDomSnapshot().catch(() => {}); }, 500);
+    }
+  }
+
+  getDVR(since?: number): typeof this.dvr {
+    if (since) return this.dvr.filter(e => e.ts >= since);
+    return [...this.dvr];
+  }
+
+  // --- DOM Snapshots (structural fingerprinting) ---
+
+  private domSnapshots: Array<{ ts: number; url: string; snapshot: unknown }> = [];
+
+  async takeDomSnapshot(): Promise<unknown> {
+    const result = (await this.cdp.send("Runtime.evaluate", {
+      expression: `(() => {
+        var MAX = 500;
+        var elements = [];
+        var interactiveCount = 0;
+        var textLength = 0;
+        var count = 0;
+        var interactiveTags = new Set(['A','BUTTON','INPUT','SELECT','TEXTAREA']);
+        var interactiveRoles = new Set(['button','link','textbox','checkbox','radio','combobox','searchbox','menuitem','tab','switch']);
+
+        function walk(node, depth) {
+          if (count >= MAX) return;
+          if (node.nodeType !== 1) return;
+          var el = node;
+          var tag = el.tagName.toLowerCase();
+          if (tag === 'script' || tag === 'style' || tag === 'noscript') return;
+          var id = el.id || '';
+          var classes = el.className && typeof el.className === 'string' ? el.className.trim() : '';
+          var role = el.getAttribute('role') || '';
+          var visible = true;
+          try {
+            var cs = getComputedStyle(el);
+            if (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') visible = false;
+          } catch(e) { visible = false; }
+          var text = '';
+          for (var i = 0; i < el.childNodes.length; i++) {
+            if (el.childNodes[i].nodeType === 3) text += el.childNodes[i].textContent || '';
+          }
+          text = text.trim().slice(0, 100);
+          if (visible && text.length > 0) textLength += text.length;
+          var isInteractive = interactiveTags.has(el.tagName) || interactiveRoles.has(role) || el.getAttribute('contenteditable') === 'true' || el.hasAttribute('onclick');
+          if (isInteractive && visible) interactiveCount++;
+          elements.push({ tag: tag, id: id, classes: classes, text: text, depth: depth, childCount: el.children.length, role: role, visible: visible });
+          count++;
+          for (var c = 0; c < el.children.length; c++) {
+            walk(el.children[c], depth + 1);
+          }
+        }
+        walk(document.body || document.documentElement, 0);
+
+        var hashVal = 0;
+        for (var i = 0; i < elements.length; i++) {
+          var e = elements[i];
+          var s = e.tag + ':' + e.id + ':' + e.depth + ':' + e.childCount;
+          for (var j = 0; j < s.length; j++) {
+            hashVal = ((hashVal << 5) - hashVal + s.charCodeAt(j)) | 0;
+          }
+        }
+
+        return {
+          url: window.location.href,
+          title: document.title,
+          ts: Date.now(),
+          elements: elements,
+          interactiveCount: interactiveCount,
+          textLength: textLength,
+          hash: 'dom-' + Math.abs(hashVal).toString(36)
+        };
+      })()`,
+      returnByValue: true,
+    })) as { result: { value: any } };
+
+    const snapshot = result.result.value;
+    this.domSnapshots.push({ ts: snapshot.ts, url: snapshot.url, snapshot });
+    if (this.domSnapshots.length > 20) this.domSnapshots.shift();
+    return snapshot;
+  }
+
+  diffDomSnapshots(since?: number): { added: object[]; removed: object[]; changed: object[]; summary: string } {
+    if (this.domSnapshots.length < 2) {
+      return { added: [], removed: [], changed: [], summary: "Not enough snapshots to diff (need at least 2)" };
+    }
+
+    const latest = this.domSnapshots[this.domSnapshots.length - 1].snapshot as any;
+    let baseline: any;
+
+    if (since) {
+      // Find the snapshot closest to the `since` timestamp
+      let closest = this.domSnapshots[0];
+      let closestDist = Math.abs(closest.ts - since);
+      for (const s of this.domSnapshots) {
+        const dist = Math.abs(s.ts - since);
+        if (dist < closestDist) { closest = s; closestDist = dist; }
+      }
+      baseline = closest.snapshot;
+    } else {
+      baseline = this.domSnapshots[this.domSnapshots.length - 2].snapshot;
+    }
+
+    const oldEls: any[] = baseline.elements || [];
+    const newEls: any[] = latest.elements || [];
+
+    // Build fingerprint maps keyed by tag+id+depth
+    function fingerprint(el: any): string {
+      return `${el.tag}|${el.id}|${el.depth}`;
+    }
+    function contentKey(el: any): string {
+      return `${el.tag}|${el.id}|${el.depth}|${el.classes}|${el.text}|${el.childCount}|${el.role}|${el.visible}`;
+    }
+
+    // Build multi-maps (same fingerprint can appear multiple times)
+    const oldMap = new Map<string, any[]>();
+    for (const el of oldEls) {
+      const fp = fingerprint(el);
+      if (!oldMap.has(fp)) oldMap.set(fp, []);
+      oldMap.get(fp)!.push(el);
+    }
+    const newMap = new Map<string, any[]>();
+    for (const el of newEls) {
+      const fp = fingerprint(el);
+      if (!newMap.has(fp)) newMap.set(fp, []);
+      newMap.get(fp)!.push(el);
+    }
+
+    const added: object[] = [];
+    const removed: object[] = [];
+    const changed: object[] = [];
+
+    // Track consumed old elements
+    const oldConsumed = new Map<string, number>(); // fp -> count consumed
+
+    for (const [fp, newList] of newMap) {
+      const oldList = oldMap.get(fp) || [];
+      const consumed = oldConsumed.get(fp) || 0;
+      for (let i = 0; i < newList.length; i++) {
+        const newEl = newList[i];
+        if (i < oldList.length) {
+          // Matched — check for content changes
+          const oldEl = oldList[i];
+          if (contentKey(oldEl) !== contentKey(newEl)) {
+            const changes: Record<string, { from: any; to: any }> = {};
+            if (oldEl.text !== newEl.text) changes.text = { from: oldEl.text, to: newEl.text };
+            if (oldEl.classes !== newEl.classes) changes.classes = { from: oldEl.classes, to: newEl.classes };
+            if (oldEl.childCount !== newEl.childCount) changes.childCount = { from: oldEl.childCount, to: newEl.childCount };
+            if (oldEl.visible !== newEl.visible) changes.visible = { from: oldEl.visible, to: newEl.visible };
+            if (oldEl.role !== newEl.role) changes.role = { from: oldEl.role, to: newEl.role };
+            changed.push({ tag: newEl.tag, id: newEl.id, depth: newEl.depth, changes });
+          }
+        } else {
+          // New element
+          added.push(newEl);
+        }
+      }
+      oldConsumed.set(fp, newList.length);
+    }
+
+    // Find removed elements (in old but not matched by new)
+    for (const [fp, oldList] of oldMap) {
+      const newList = newMap.get(fp) || [];
+      for (let i = newList.length; i < oldList.length; i++) {
+        removed.push(oldList[i]);
+      }
+    }
+
+    // Build summary
+    function elLabel(el: any): string {
+      let label = el.tag;
+      if (el.id) label += '#' + el.id;
+      else if (el.classes) label += '.' + el.classes.split(/\s+/)[0];
+      return label;
+    }
+
+    const parts: string[] = [];
+    if (added.length > 0) {
+      const labels = added.slice(0, 5).map(elLabel);
+      parts.push(`+${added.length} elements added (${labels.join(', ')}${added.length > 5 ? ', ...' : ''})`);
+    }
+    if (removed.length > 0) {
+      const labels = removed.slice(0, 5).map(elLabel);
+      parts.push(`-${removed.length} elements removed (${labels.join(', ')}${removed.length > 5 ? ', ...' : ''})`);
+    }
+    if (changed.length > 0) {
+      const labels = changed.slice(0, 5).map((c: any) => {
+        let label = elLabel(c);
+        const textChange = c.changes?.text;
+        if (textChange) label += `: "${textChange.from}" -> "${textChange.to}"`;
+        return label;
+      });
+      parts.push(`~${changed.length} elements changed (${labels.join(', ')}${changed.length > 5 ? ', ...' : ''})`);
+    }
+    if (parts.length === 0) parts.push("No structural changes detected");
+
+    return { added, removed, changed, summary: parts.join('\n  ') };
+  }
+
+  /** Persistent event buffer — always collecting once enabled */
+  private eventBuffer: Array<{ type: string; data: Record<string, unknown>; ts: number }> = [];
+  private eventsEnabled = false;
+
+  /** Enable event collection (idempotent) */
+  async enableEvents(): Promise<void> {
+    if (this.eventsEnabled) return;
+    this.eventsEnabled = true;
+    await this.cdp.send("Log.enable").catch(() => {});
+
+    this.cdp.on("Runtime.consoleAPICalled", (params: any) => {
+      this.eventBuffer.push({ type: "console", data: { level: params.type, text: params.args?.map((a: any) => a.value ?? a.description ?? "").join(" ") }, ts: Date.now() });
+      if (this.eventBuffer.length > 500) this.eventBuffer.shift();
+    });
+
+    this.cdp.on("Page.frameNavigated", (params: any) => {
+      this.eventBuffer.push({ type: "navigation", data: { url: params.frame?.url }, ts: Date.now() });
+    });
+
+    this.cdp.on("Network.responseReceived", (params: any) => {
+      const status = params.response?.status;
+      if (status >= 400) {
+        this.eventBuffer.push({ type: "network_error", data: { url: params.response?.url, status }, ts: Date.now() });
+      }
+    });
+
+    this.cdp.on("Runtime.exceptionThrown", (params: any) => {
+      this.eventBuffer.push({ type: "error", data: { text: params.exceptionDetails?.text || "Unknown error" }, ts: Date.now() });
+    });
+  }
+
+  /** Drain buffered events */
+  getEvents(): Array<{ type: string; data: Record<string, unknown>; ts: number }> {
+    const events = this.eventBuffer.splice(0);
+    return events;
+  }
+
+  async setAuthState(state: {
+    cookies: Array<Record<string, unknown>>;
+    localStorage?: Record<string, string>;
+    sessionStorage?: Record<string, string>;
+  }): Promise<void> {
+    // Set cookies
+    for (const cookie of state.cookies) {
+      await this.cdp.send("Network.setCookie", cookie).catch(() => {});
+    }
+    // Set storage
+    if (state.localStorage || state.sessionStorage) {
+      const ls = JSON.stringify(state.localStorage || {});
+      const ss = JSON.stringify(state.sessionStorage || {});
+      await this.cdp.send("Runtime.evaluate", {
+        expression: `(() => {
+          const ls = ${ls};
+          const ss = ${ss};
+          for (const [k,v] of Object.entries(ls)) localStorage.setItem(k, v);
+          for (const [k,v] of Object.entries(ss)) sessionStorage.setItem(k, v);
+        })()`,
+      });
+    }
+  }
+
+  // --- Screencast (push-based frame streaming) ---
+
+  async startScreencast(opts?: { quality?: number; maxWidth?: number; maxHeight?: number }): Promise<void> {
+    if (this.screencastActive) return;
+    this.screencastActive = true;
+
+    this.cdp.on("Page.screencastFrame", (params) => {
+      this.screencastFrame = { base64: params.data as string, ts: Date.now() };
+      // Ack immediately to keep frames flowing
+      this.cdp.send("Page.screencastFrameAck", { sessionId: params.sessionId }).catch(() => {});
+      this.onScreencastFrame?.(params.data as string);
+    });
+
+    await this.cdp.send("Page.startScreencast", {
+      format: "jpeg",
+      quality: opts?.quality ?? 60,
+      maxWidth: opts?.maxWidth ?? 1920,
+      maxHeight: opts?.maxHeight ?? 1080,
+      everyNthFrame: 1,
+    });
+  }
+
+  async stopScreencast(): Promise<void> {
+    if (!this.screencastActive) return;
+    this.screencastActive = false;
+    this.onScreencastFrame = null;
+    await this.cdp.send("Page.stopScreencast").catch(() => {});
+  }
+
+  /** Get the latest cached screencast frame (instant, no new capture) */
+  getLatestFrame(): { base64: string; ts: number } | null {
+    return this.screencastFrame;
+  }
+
+  /** Subscribe to screencast frame updates */
+  setFrameListener(cb: ((base64: string) => void) | null): void {
+    this.onScreencastFrame = cb;
+  }
+
   // --- Cleanup ---
 
   async close(): Promise<void> {
+    await this.stopScreencast();
     await this.cdp.close();
   }
 }

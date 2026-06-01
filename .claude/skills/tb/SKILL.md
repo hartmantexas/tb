@@ -1,6 +1,6 @@
 ---
 name: tb
-description: Headless browser for AI agents — navigate, screenshot, interact with numbered elements
+description: Headless browser for AI agents — navigate, screenshot, interact with numbered elements, site-aware reading, scraping, groups, DOM diffing
 user-invocable: true
 ---
 
@@ -204,3 +204,138 @@ tb --json screenshot /tmp/shot.png
 **TMPDIR errors** — if your shell has `TMPDIR` pointing to a disconnected drive, tb handles it (falls back to `/tmp`).
 
 **Elements missing from `tb elements`** — only visible, non-hidden elements with text are listed. Interactive divs with `onClick` but no `role="button"` may be missed. Use `tb eval` to find and click them directly.
+
+## Smart Reading & Scraping
+
+### `tb read` — site-aware extraction (one command)
+
+```bash
+# GitHub repo — returns metadata + full README
+tb read https://github.com/D4Vinci/Scrapling
+
+# Multiple repos, one tab, sequential
+tb read https://github.com/D4Vinci/Scrapling https://github.com/microsoft/markitdown
+
+# GitHub trending — structured list of all repos
+tb read https://github.com/trending
+
+# Trending + follow top 5 repos for full READMEs
+tb read https://github.com/trending --follow 5
+
+# Hacker News — all stories with title, URL, points
+tb read https://news.ycombinator.com
+
+# Any unknown site — smart generic extraction
+tb read https://example.com
+
+# JSON output for programmatic use
+tb read https://github.com/trending --json
+```
+
+`tb read` auto-detects the site and uses purpose-built extractors. GitHub repos return `{repo, description, stars, forks, topics, languages, readme}`. HN returns `{stories: [{title, url, points, comments}]}`.
+
+### `tb describe` — page type detection
+
+```bash
+tb describe
+```
+Returns a structural summary: page type (form/list/table/article/directory), sections, forms with field names, repeating elements, button labels. Tells an agent everything about a page in ~200 tokens.
+
+### `tb auto-extract` — zero-config structured data
+
+```bash
+tb auto-extract
+```
+Finds repeating items on any page automatically. No selectors needed. Uses structural fingerprinting (tag, depth, parent, children pattern) to find the dominant repeating group, then extracts fields by role. Works on product grids, search results, feeds, tables.
+
+### `tb find-similar <selector>` — find matching elements
+
+```bash
+tb find-similar ".titleline"     # Give it one element, find all similar
+tb find-similar "#3"             # By element number
+```
+Scrapling-inspired multi-signal similarity scoring. Compares tag, depth, parent, attributes, children, siblings, text.
+
+### `tb batch` — multiple commands, one call
+
+```bash
+tb batch 'url ; title ; snapshot -i ; scrape' --json
+```
+Runs all commands sequentially, returns array of `{step, result}`.
+
+## Groups & Parallel Scraping
+
+Groups are windows. Sessions are tabs. Agents get whole groups.
+
+```bash
+# Create sessions in groups
+tb open https://github.com/a -n repoA --group research --new
+tb open https://github.com/b -n repoB --group research --new
+
+# View/manage groups
+tb groups                          # Quick overview
+tb move repoA --group other        # Move tab to different window
+tb group rename research dev       # Rename group
+
+# Group-level commands — hit ALL tabs at once
+tb url --group research            # URLs from all tabs
+tb scrape --group research         # Scrape all tabs simultaneously
+tb screenshot --group research     # Screenshot all tabs
+tb eval "document.title" --group research  # Run JS on all tabs
+
+# Watch a specific group
+tb watch --group research          # Focused window with only group tabs
+```
+
+### Fan-out with `tb pipe`
+
+```bash
+# Extract links from current page, open each as a tab, run command on all
+tb pipe --links ".titleline a" --group stories --then scrape --limit 5
+```
+
+## DOM Diffing
+
+Auto-snapshots fire on every navigation and click. Ask what changed:
+
+```bash
+tb dom-snapshot                    # Take manual snapshot
+tb dom-diff                        # What changed since last snapshot?
+# → +3 elements added (form, input#email, input#password)
+# → -1 element removed (div.welcome-banner)
+# → ~2 elements changed (nav.active, #cart-count: "0" → "1")
+```
+
+### `tb snapshot` — accessibility tree
+
+```bash
+tb snapshot -i                     # Interactive elements with @e refs
+tb act "click sign in"             # Natural language action (no LLM)
+tb tap-ref @e3                     # Click by accessibility ref
+```
+
+## Workflow Commands
+
+| Command | What it does |
+|---------|-------------|
+| `tb read <url>` | Site-aware reading (GitHub, HN, generic) |
+| `tb read <url> --follow N` | Read + follow N links |
+| `tb describe` | Page type + structure summary |
+| `tb auto-extract` | Zero-config repeated item extraction |
+| `tb find-similar <sel>` | Find structurally similar elements |
+| `tb batch 'cmd1;cmd2'` | Multi-command in one call |
+| `tb pipe --links <sel>` | Fan-out: open links, run on all |
+| `tb dom-diff` | Structural changes since last action |
+| `tb dom-snapshot` | Take DOM fingerprint |
+| `tb groups` | List all groups and tabs |
+| `tb move <session> --group` | Move tab between windows |
+| `tb intercept block <pat>` | Block URL patterns |
+| `tb intercept mock <pat> <json>` | Mock API responses |
+| `tb history` | DVR action log |
+| `tb events` | Live page events (console, nav, errors) |
+| `tb record <name>` | Record user actions |
+| `tb replay <name>` | Replay recorded actions |
+| `tb auth save/load <name>` | Save/restore cookies + storage |
+| `tb watch` | Live web UI viewer |
+| `tb watch --group <name>` | Watch specific group |
+| `tb cc` | Command center (grid of all windows) |

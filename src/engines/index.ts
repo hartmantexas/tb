@@ -1,5 +1,6 @@
 import { LightpandaEngine } from "./lightpanda.js";
 import { ChromiumEngine } from "./chromium.js";
+import { loadConfig } from "../config.js";
 import type { Engine, EngineInfo, EngineType } from "./types.js";
 
 export type { Engine, EngineInfo, EngineProcess, EngineType, LaunchOptions } from "./types.js";
@@ -37,15 +38,16 @@ export async function resolveEngine(
     return engine;
   }
 
-  // Auto mode: ALWAYS prefer lightpanda.
-  // Lightpanda computes CSS and we extract computed styles for screenshots.
-  // Chromium is only used when explicitly requested via --engine chromium.
-  const lpInfo = await engines.lightpanda.detect();
-  if (lpInfo) return engines.lightpanda;
+  // Auto mode: use config's defaultEngine, fall back to the other if unavailable
+  const config = loadConfig();
+  const defaultEngine = config.defaultEngine === "auto" ? "chromium" : config.defaultEngine;
+  const fallback = defaultEngine === "chromium" ? "lightpanda" : "chromium";
 
-  // Fall back to chromium only if lightpanda isn't installed
-  const chromiumInfo = await engines.chromium.detect();
-  if (chromiumInfo) return engines.chromium;
+  const defaultInfo = await engines[defaultEngine].detect();
+  if (defaultInfo) return engines[defaultEngine];
+
+  const fallbackInfo = await engines[fallback].detect();
+  if (fallbackInfo) return engines[fallback];
 
   throw new Error(
     "No browser engine found. Run: tb install\n" +

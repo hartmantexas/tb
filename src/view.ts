@@ -51,126 +51,66 @@ async function cmd(method: string, params: Record<string, unknown> = {}): Promis
   return r.result;
 }
 
-/**
- * Inject numbered badges onto interactive elements in the page DOM.
- * Returns the element list. Badges are visible in the screenshot.
- */
-const INJECT_BADGES_JS = `(() => {
-  // Remove old badges first
-  document.querySelectorAll('.tb-badge').forEach(function(b) { b.remove(); });
+/** Shared visibility check JS — same as cli.ts */
+const VIS_JS = `
+  function vis(el){try{if(getComputedStyle(el).display==='none'||el.offsetParent===null)return false}catch(e){return false}var r=el.getBoundingClientRect();if(r.width<2||r.height<2)return false;var hit=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2);return hit&&(hit===el||el.contains(hit)||(hit.closest&&hit.closest('a,button')===el))}
+  function inView(r){return r.width>5&&r.height>5&&r.x+r.width>0&&r.y+r.height>0&&r.x<window.innerWidth&&r.y<window.innerHeight}
+`;
 
-  var results = [];
-  var seen = new Set();
-  var idx = 1;
+/** Shared collection JS — collects all visible elements, sorts by position */
+const COLLECT_JS = `
+  var els=[],seen=new Set();
+  ${VIS_JS}
+  var inputs=document.querySelectorAll('input[type="text"],input[type="search"],input[type="email"],input[type="password"],input[type="url"],input[type="number"],input:not([type]),textarea');
+  for(var i=0;i<inputs.length;i++){if(inputs[i].type==='hidden'||!vis(inputs[i]))continue;var r=inputs[i].getBoundingClientRect();if(inView(r))els.push({el:inputs[i],type:'input',text:(inputs[i].getAttribute('placeholder')||inputs[i].name||'input').slice(0,50),y:r.y,x:r.x})}
+  var btns=document.querySelectorAll('button,input[type="submit"],input[type="button"],[role="button"]');
+  for(var j=0;j<btns.length;j++){if(!vis(btns[j]))continue;var t=(btns[j].textContent||btns[j].value||btns[j].getAttribute('aria-label')||'').trim().replace(/\\s+/g,' ');if(!t||seen.has(t))continue;seen.add(t);var r2=btns[j].getBoundingClientRect();if(inView(r2))els.push({el:btns[j],type:'button',text:t.slice(0,50),y:r2.y,x:r2.x})}
+  var links=document.querySelectorAll('a[href]');
+  for(var k=0;k<links.length;k++){if(!vis(links[k]))continue;var at=(links[k].textContent||'').trim().replace(/\\s+/g,' ');if(!at||at.length<2||seen.has(at))continue;seen.add(at);var r3=links[k].getBoundingClientRect();if(inView(r3))els.push({el:links[k],type:'link',text:at.slice(0,50),y:r3.y,x:r3.x})}
+  els.sort(function(a,b){var dy=a.y-b.y;return Math.abs(dy)>15?dy:a.x-b.x});
+`;
 
-  function addBadge(el, num, type) {
-    var badge = document.createElement('span');
-    badge.className = 'tb-badge';
-    badge.textContent = String(num);
-    badge.setAttribute('style',
-      'display:inline-block !important;' +
-      'background:' + (type === 'input' ? '#e8b931' : type === 'button' ? '#34a853' : '#4285f4') + ' !important;' +
-      'color:#fff !important;font-size:9px !important;font-weight:bold !important;' +
-      'padding:0px 3px !important;border-radius:3px !important;margin-right:2px !important;' +
-      'line-height:14px !important;vertical-align:middle !important;font-family:monospace !important;'
-    );
+/** Build JS to collect, sort, then clear+focus the nth element */
+function buildClearFocusJS(num: number): string {
+  return `(() => {
+    ${COLLECT_JS}
+    if(${num}<1||${num}>els.length)return{ok:false};
+    var target=els[${num}-1];
+    if(target.type!=='input')return{ok:false};
+    var setter=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value');
+    if(setter&&setter.set)setter.set.call(target.el,'');else target.el.value='';
+    target.el.dispatchEvent(new Event('input',{bubbles:true}));
+    target.el.focus();
+    return{ok:true,selector:target.el.id?'#'+target.el.id:(target.el.name?'[name="'+target.el.name+'"]':null)};
+  })()`;
+}
 
-    // For inputs, add before the element
-    if (type === 'input') {
-      if (el.parentElement) el.parentElement.insertBefore(badge, el);
-    } else {
-      // For links/buttons, prepend inside
-      el.insertBefore(badge, el.firstChild);
-    }
-  }
+/** Build JS to collect, sort, then click the nth element — full mouse event sequence */
+function buildTapJS(num: number): string {
+  return `(() => {
+    ${COLLECT_JS}
+    if(${num}<1||${num}>els.length)return{ok:false};
+    var target=els[${num}-1];
+    var rect=target.el.getBoundingClientRect();
+    var cx=rect.x+rect.width/2, cy=rect.y+rect.height/2;
+    target.el.focus();
+    target.el.dispatchEvent(new MouseEvent('mouseover',{bubbles:true,clientX:cx,clientY:cy}));
+    target.el.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,clientX:cx,clientY:cy,button:0}));
+    target.el.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true,clientX:cx,clientY:cy,button:0}));
+    target.el.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,clientX:cx,clientY:cy,button:0}));
+    return{ok:true,type:target.type,text:target.text,x:cx,y:cy};
+  })()`;
+}
 
-  // Inputs first (most important)
-  var inputs = document.querySelectorAll('input[type="text"], input[type="search"], input[type="email"], input[type="password"], input[type="url"], input:not([type]), textarea');
-  for (var i = 0; i < inputs.length; i++) {
-    var inp = inputs[i];
-    // Skip hidden inputs
-    try { if (getComputedStyle(inp).display === 'none' || inp.type === 'hidden') continue; } catch(e) { continue; }
-    var label = inp.getAttribute('placeholder') || inp.getAttribute('aria-label') || inp.name || 'input';
-    var val = inp.value || '';
-    var sel = inp.id ? '#' + inp.id : (inp.name ? '[name="' + inp.name + '"]' : 'input');
-    addBadge(inp, idx, 'input');
-    results.push({ index: idx, type: 'input', text: label.slice(0,40), value: val, selector: sel });
-    idx++;
-  }
-
-  // Buttons
-  var btns = document.querySelectorAll('button, input[type="submit"], input[type="button"]');
-  for (var j = 0; j < btns.length; j++) {
-    var btn = btns[j];
-    try { if (getComputedStyle(btn).display === 'none') continue; } catch(e) { continue; }
-    var btnText = (btn.textContent || btn.value || btn.getAttribute('aria-label') || '').trim();
-    if (!btnText || seen.has(btnText)) continue;
-    seen.add(btnText);
-    var btnSel = btn.id ? '#' + btn.id : (btn.name ? '[name="' + btn.name + '"]' : 'button');
-    addBadge(btn, idx, 'button');
-    results.push({ index: idx, type: 'button', text: btnText.slice(0,40), selector: btnSel });
-    idx++;
-  }
-
-  // Links (limit to first 20 visible)
-  var links = document.querySelectorAll('a[href]');
-  var linkCount = 0;
-  for (var k = 0; k < links.length && linkCount < 20; k++) {
-    var a = links[k];
-    try { if (getComputedStyle(a).display === 'none') continue; } catch(e) { continue; }
-    var aText = (a.textContent || '').trim();
-    if (!aText || aText.length < 2 || seen.has(aText)) continue;
-    seen.add(aText);
-    var aSel = a.id ? '#' + a.id : 'a[href="' + (a.getAttribute('href') || '').replace(/"/g, '\\\\"') + '"]';
-    addBadge(a, idx, 'link');
-    results.push({ index: idx, type: 'link', text: aText.slice(0,40), selector: aSel });
-    idx++;
-    linkCount++;
-  }
-
-  return results;
-})()`;
-
-/** Extract elements WITHOUT injecting badges — just returns the list */
+/** Extract elements — same logic as cli.ts, visually sorted, elementFromPoint filtered */
 const EXTRACT_ELEMENTS_JS = `(() => {
+  ${COLLECT_JS}
   var results = [];
-  var seen = new Set();
-  var idx = 1;
-
-  var inputs = document.querySelectorAll('input[type="text"], input[type="search"], input[type="email"], input[type="password"], input[type="url"], input:not([type]), textarea');
-  for (var i = 0; i < inputs.length; i++) {
-    var inp = inputs[i];
-    try { if (getComputedStyle(inp).display === 'none' || inp.type === 'hidden') continue; } catch(e) { continue; }
-    var label = inp.getAttribute('aria-label') || inp.getAttribute('title') || inp.getAttribute('placeholder') || inp.name || 'input';
-    var val = inp.value || '';
-    var sel = inp.id ? '#' + inp.id : (inp.name ? '[name="' + inp.name + '"]' : 'input');
-    results.push({ index: idx++, type: 'input', text: label.trim().slice(0,40), value: val, selector: sel });
+  for (var i = 0; i < els.length; i++) {
+    var e = els[i];
+    var sel = e.el.id ? '#' + e.el.id : (e.el.name ? '[name="' + e.el.name + '"]' : e.el.tagName.toLowerCase());
+    results.push({ index: i+1, type: e.type, text: e.text, value: e.el.value || '', selector: sel });
   }
-
-  var btns = document.querySelectorAll('button, input[type="submit"], input[type="button"]');
-  for (var j = 0; j < btns.length; j++) {
-    var btn = btns[j];
-    try { if (getComputedStyle(btn).display === 'none') continue; } catch(e) { continue; }
-    var btnText = (btn.textContent || btn.value || btn.getAttribute('aria-label') || '').trim();
-    if (!btnText || seen.has(btnText)) continue;
-    seen.add(btnText);
-    var btnSel = btn.id ? '#' + btn.id : (btn.name ? '[name="' + btn.name + '"]' : 'button');
-    results.push({ index: idx++, type: 'button', text: btnText.slice(0,40), selector: btnSel });
-  }
-
-  var links = document.querySelectorAll('a[href]');
-  var lc = 0;
-  for (var k = 0; k < links.length && lc < 20; k++) {
-    var a = links[k];
-    try { if (getComputedStyle(a).display === 'none') continue; } catch(e) { continue; }
-    var aText = (a.textContent || '').trim();
-    if (!aText || aText.length < 2 || seen.has(aText)) continue;
-    seen.add(aText);
-    var aSel = a.id ? '#' + a.id : 'a[href="' + (a.getAttribute('href') || '').replace(/"/g, '\\\\"') + '"]';
-    results.push({ index: idx++, type: 'link', text: aText.slice(0,40), selector: aSel });
-    lc++;
-  }
-
   return results;
 })()`;
 
@@ -406,66 +346,57 @@ export async function liveSession(initialUrl?: string, engine?: string, forceNew
     if (!input) { rl.prompt(); return; }
 
     try {
-      // Number → click/focus that element
-      const num = parseInt(input);
-      if (!isNaN(num) && num > 0 && input.match(/^\d+$/)) {
+      // Number(s) → click/focus elements using DOM re-enumeration (same walk as tb tap)
+      // Supports single "3" or multi "8 10 15"
+      const nums = input.split(/\s+/).map(Number).filter(n => n > 0);
+      if (nums.length > 0 && input.match(/^[\d\s]+$/)) {
+        // Multi-tap: tap all non-input elements, then render once
+        if (nums.length > 1) {
+          for (const n of nums) {
+            const tapR = await cmd("evaluate", { expression: buildTapJS(n) }) as { ok: boolean; text?: string } | null;
+            if (tapR?.ok) console.log(dim(`Tapped #${n}: ${tapR.text}`));
+            else console.log(dim(`#${n} not found`));
+          }
+          await new Promise(r => setTimeout(r, 800));
+          await renderPage();
+          rl.prompt();
+          return;
+        }
+        // Single number
+        const num = nums[0];
         const el = lastElements.find(e => e.index === num);
-        if (el) {
-          if (el.type === "input") {
-            await cmd("click", { selector: el.selector });
-            console.log(`Focused: ${el.text}`);
-            rl.question(`  Type: `, async (text) => {
-              if (text.trim()) {
-                // Clear existing value first, then type
-                await cmd("evaluate", {
-                  expression: `(() => { var el = document.querySelector('${el.selector.replace(/'/g, "\\'")}'); if(el) { el.value = ''; el.focus(); } })()`,
-                });
-                await cmd("type", { selector: el.selector, text: text.trim() });
-                console.log(dim(`  Typed "${text.trim()}" into ${el.text}`));
+        if (el && el.type === "input") {
+          // For inputs, use re-enumeration to focus, then prompt for text
+          const tapResult = await cmd("evaluate", { expression: buildTapJS(num) }) as { ok: boolean } | null;
+          if (!tapResult?.ok) { console.log(dim(`Element #${num} not found.`)); rl.prompt(); return; }
+          console.log(`Focused: ${el.text}`);
+          rl.question(`  Type: `, async (text) => {
+            if (text.trim()) {
+              // Clear and focus via re-enumeration, then type using returned selector
+              const cfResult = await cmd("evaluate", { expression: buildClearFocusJS(num) }) as { ok: boolean; selector?: string } | null;
+              if (cfResult?.ok && cfResult.selector) {
+                await cmd("type", { selector: cfResult.selector, text: text.trim() });
+              } else {
+                // Fallback: type into the active element
+                await cmd("evaluate", { expression: `document.activeElement && (document.activeElement.value = ${JSON.stringify(text.trim())}, document.activeElement.dispatchEvent(new Event('input', {bubbles:true})), true)` });
               }
-              await new Promise(r => setTimeout(r, 300));
-              await renderPage();
-              rl.prompt();
-            });
-            return;
-          } else {
-            console.log(dim(`Clicking: ${el.text}`));
-            if (el.type === "button") {
-              // Build form URL manually and navigate (lightpanda form.submit doesn't navigate)
-              const formUrl = (await cmd("evaluate", {
-                expression: `(() => {
-                  var el = document.querySelector('${el.selector.replace(/'/g, "\\'")}');
-                  if (!el) return null;
-                  var form = el.closest ? el.closest('form') : el.form;
-                  if (!form) { el.click(); return null; }
-                  var action = form.action || window.location.href;
-                  var method = (form.method || 'get').toLowerCase();
-                  if (method === 'get') {
-                    var params = [];
-                    var inputs = form.querySelectorAll('input[name], select[name], textarea[name]');
-                    for (var inp of inputs) {
-                      if (inp.type === 'submit' || inp.type === 'button' || inp.type === 'image') continue;
-                      if (inp.type === 'checkbox' && !inp.checked) continue;
-                      if (inp.type === 'radio' && !inp.checked) continue;
-                      params.push(encodeURIComponent(inp.name) + '=' + encodeURIComponent(inp.value || ''));
-                    }
-                    return action.split('?')[0] + '?' + params.join('&');
-                  }
-                  form.submit();
-                  return null;
-                })()`,
-              })) as string | null;
-              if (formUrl) {
-                await cmd("goto", { url: formUrl });
-              }
-            } else {
-              await cmd("click", { selector: el.selector });
+              console.log(dim(`  Typed "${text.trim()}" into ${el.text}`));
             }
+            await new Promise(r => setTimeout(r, 300));
+            await renderPage();
+            rl.prompt();
+          });
+          return;
+        } else {
+          // For buttons/links, use tap JS with full mouse event sequence
+          const tapResult = await cmd("evaluate", { expression: buildTapJS(num) }) as { ok: boolean; type?: string; text?: string } | null;
+          if (tapResult?.ok) {
+            console.log(dim(`Clicked: ${tapResult.text} (${tapResult.type})`));
             await new Promise(r => setTimeout(r, 1200));
             await renderPage();
+          } else {
+            console.log(dim(`No element #${num}. Type "links" to see all.`));
           }
-        } else {
-          console.log(dim(`No element #${num}. Type "links" to see all.`));
         }
         rl.prompt();
         return;
@@ -481,10 +412,13 @@ export async function liveSession(initialUrl?: string, engine?: string, forceNew
           if (!text) { console.log("Usage: type <text>"); break; }
           const firstInput = lastElements.find(e => e.type === "input");
           if (firstInput) {
-            await cmd("evaluate", {
-              expression: `(() => { var el = document.querySelector('${firstInput.selector.replace(/'/g, "\\'")}'); if(el) { el.value = ''; el.focus(); } })()`,
-            });
-            await cmd("type", { selector: firstInput.selector, text });
+            // Clear and focus via re-enumeration (element #1 is always the first input)
+            const cfResult = await cmd("evaluate", { expression: buildClearFocusJS(firstInput.index) }) as { ok: boolean; selector?: string } | null;
+            if (cfResult?.ok && cfResult.selector) {
+              await cmd("type", { selector: cfResult.selector, text });
+            } else {
+              await cmd("evaluate", { expression: `document.activeElement && (document.activeElement.value = ${JSON.stringify(text)}, document.activeElement.dispatchEvent(new Event('input', {bubbles:true})), true)` });
+            }
             console.log(dim(`Typed "${text}" into ${firstInput.text}`));
             await new Promise(r => setTimeout(r, 300));
             await renderPage();
