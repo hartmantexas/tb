@@ -607,13 +607,15 @@ Examples:
 
       case "install": {
         const { installEngine } = await import("./commands/install.js");
-        const engine = positional[0] as
+        let engine = positional[0] as
           | "lightpanda"
           | "chromium"
+          | "render-engine"
           | "all"
           | undefined;
-        if (engine && !["lightpanda", "chromium", "all"].includes(engine)) {
-          die("Usage: tb install [lightpanda|chromium|all]");
+        if (engine === ("blitz" as typeof engine)) engine = "render-engine";
+        if (engine && !["lightpanda", "chromium", "render-engine", "all"].includes(engine)) {
+          die("Usage: tb install [lightpanda|chromium|render-engine|all]");
         }
         await installEngine(engine);
         break;

@@ -862,6 +862,9 @@ export class Session {
 
       // Fetch external CSS and inline it for Blitz
       let fullHTML = htmlContent;
+      // Blitz (real engine) gets a near-original HTML: inlined CSS + a root pinned
+      // to the viewport so the page fills it (Blitz otherwise shrink-wraps the body).
+      let blitzHTML = htmlContent;
       try {
         const linksResult = (await this.cdp.send("Runtime.evaluate", {
           expression: `Array.from(document.querySelectorAll('link[rel=stylesheet]')).map(l => l.href).filter(Boolean)`,
@@ -883,6 +886,21 @@ export class Session {
           await this.cdp.send("Runtime.evaluate", {
             expression: `(()=>{try{var s=document.createElement('style');s.textContent=${JSON.stringify(allCSS)};(document.head||document.documentElement).appendChild(s);}catch(e){}})()`,
           }).catch(() => {});
+        }
+
+        // Build the Blitz HTML: original markup, external CSS inlined, scripts and
+        // un-fetchable stylesheet links dropped, and a root sized to the viewport.
+        {
+          const W = options.width ?? 1280;
+          const H = options.height ?? 720;
+          const normalize = `<style>html{width:${W}px;min-height:${H}px;display:flex}body{width:100%;margin:0}</style>`;
+          const cssTag = allCSS ? `<style>${allCSS}</style>` : "";
+          let bh = blitzHTML
+            .replace(/<link[^>]*rel=["']?stylesheet["']?[^>]*>/gi, "")
+            .replace(/<script[\s\S]*?<\/script>/gi, "");
+          blitzHTML = bh.includes("</head>")
+            ? bh.replace("</head>", `${cssTag}${normalize}</head>`)
+            : `${cssTag}${normalize}${bh}`;
         }
 
         // Inject CSS into HTML, remove external refs Blitz can't fetch,
@@ -951,8 +969,10 @@ export class Session {
       const blitzPath = join(new URL(".", import.meta.url).pathname, "..", "render-engine", "target", "release", "tb-render");
       let buffer: Buffer;
       if (existsSync(blitzPath)) {
-        buffer = await renderHTML(fullHTML, width, height);
+        // Pixel-perfect: real Stylo/Taffy/Vello rendering of near-original HTML.
+        buffer = await renderHTML(blitzHTML, width, height);
       } else {
+        // No Blitz binary: in-page cascade resolver → Takumi approximation.
         const tree = await this.extractResolvedTree();
         buffer = tree
           ? await renderWithTakumi(tree, { width, height })

@@ -221,9 +221,60 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(0)} MB`;
 }
 
+async function installRenderEngine(): Promise<void> {
+  // tb-render lives in render-engine/ at the repo root (this file is src/commands/).
+  const repoRoot = join(new URL(".", import.meta.url).pathname, "..", "..");
+  const engineDir = join(repoRoot, "render-engine");
+  const binPath = join(engineDir, "target", "release", "tb-render");
+
+  if (existsSync(binPath)) {
+    console.log(`${check} Blitz render engine already built at ${binPath}`);
+    return;
+  }
+  if (!existsSync(join(engineDir, "Cargo.toml"))) {
+    console.error(`${cross} render-engine/ source not found at ${engineDir}`);
+    process.exit(1);
+  }
+
+  // Need a Rust toolchain.
+  let hasCargo = false;
+  try {
+    execSync("cargo --version", { stdio: "pipe" });
+    hasCargo = true;
+  } catch {}
+  if (!hasCargo) {
+    console.error(`${cross} cargo (Rust) not found. Install Rust, then re-run:`);
+    console.error(`   ${dim("curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh")}`);
+    console.error(`   ${dim("tb install render-engine")}`);
+    process.exit(1);
+  }
+
+  console.log(`Building Blitz render engine (Stylo + Taffy + Vello) — first build pulls ~260 crates, give it a few minutes...`);
+  try {
+    execSync("cargo build --release", { cwd: engineDir, stdio: "inherit" });
+  } catch (err) {
+    console.error(`${cross} Build failed: ${err instanceof Error ? err.message : err}`);
+    process.exit(1);
+  }
+  if (existsSync(binPath)) {
+    console.log(`${check} Blitz render engine built! Lightpanda screenshots are now pixel-perfect.`);
+    console.log(`   ${dim(`Path: ${binPath}`)}`);
+  } else {
+    console.error(`${cross} Build reported success but binary missing at ${binPath}`);
+    process.exit(1);
+  }
+}
+
 export async function installEngine(
-  engine?: "lightpanda" | "chromium" | "all"
+  engine?: "lightpanda" | "chromium" | "render-engine" | "all"
 ): Promise<void> {
+  if (engine === "render-engine") {
+    console.log(bold("\nInstalling Blitz render engine"));
+    console.log(dim("Pure-Rust HTML/CSS painter — pixel-perfect Lightpanda screenshots, no browser\n"));
+    await installRenderEngine();
+    console.log("");
+    return;
+  }
   // Default: install lightpanda
   if (!engine || engine === "lightpanda") {
     console.log(bold("\nInstalling Lightpanda"));
@@ -256,6 +307,12 @@ export async function installEngine(
     await installLightpanda();
     console.log("");
     await installChromium();
+    console.log("");
+    try {
+      await installRenderEngine();
+    } catch {
+      // optional — Blitz needs a Rust toolchain; don't fail the whole install
+    }
     console.log("");
     return;
   }

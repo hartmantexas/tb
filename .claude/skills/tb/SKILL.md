@@ -176,7 +176,12 @@ tb -w fhd open http://localhost:3000 -e c
 | `-e lp` | Lightpanda | Scraping, text extraction, fast DOM ops, low memory |
 | (default) | auto | Picks Lightpanda |
 
-**Use `-e c` for any visual work.** Lightpanda doesn't render CSS — screenshots are DOM-to-image approximations. Chromium gives pixel-perfect output.
+**Rendering paths:**
+- **Chromium (`-e c`)** — the real browser paint. Pixel-perfect, retina, full device emulation. Use for anything where exactness matters.
+- **Lightpanda + Blitz** — Lightpanda gives the DOM/CSSOM; the Blitz render engine (Stylo, Firefox's CSS engine, in an ~18MB binary) paints it. Near pixel-perfect (real gradients, grid, flexbox, tables, list markers) at 2× retina, no browser. Build once: `tb install render-engine` (needs Rust/cargo).
+- **Lightpanda without Blitz** — falls back to an in-page CSS-cascade resolver → ~85% approximation. Still useful, not exact.
+
+For pixel-perfect, either build Blitz or use `-e c`.
 
 ## JSON Mode
 
@@ -197,7 +202,7 @@ tb --json screenshot /tmp/shot.png
 
 **"Session not found"** — daemon timed out (30min idle). Run `tb open` again.
 
-**Screenshots are blank/tiny** — lightpanda can't render CSS. Use `-e c` for Chromium.
+**Lightpanda screenshots look approximate** — the Blitz render engine isn't built. Run `tb install render-engine` (needs Rust) for near-pixel-perfect output, or use `-e c`.
 
 **React inputs don't clear** — use `tb clear <selector>` instead of eval `.value = ''`.
 
