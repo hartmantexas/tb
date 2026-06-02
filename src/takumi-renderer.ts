@@ -111,11 +111,20 @@ function convertNode(node: StyledNode | string, inherited: Record<string, string
   if (s.display === "flex" || s.display === "grid") style.display = "flex";
   else style.display = "flex";
 
-  // Flex direction
+  // Flex direction. Grid has no flex equivalent, so approximate: a grid with
+  // multiple columns lays children out in a wrapping row (matches the common
+  // "card grid" / stat-row pattern far better than stacking them in a column).
   if (s.flexDirection) {
     style.flexDirection = s.flexDirection;
   } else if (s.display === "flex" || s.display === "inline-flex") {
     style.flexDirection = "row";
+  } else if (s.display === "grid") {
+    const cols = s.gridTemplateColumns || "";
+    const multiCol =
+      /repeat\(\s*([2-9]|[1-9]\d)/.test(cols) ||
+      cols.split(/\s+/).filter(Boolean).length > 1;
+    style.flexDirection = multiCol ? "row" : "column";
+    if (multiCol) style.flexWrap = "wrap";
   } else {
     style.flexDirection = "column";
   }
@@ -131,6 +140,9 @@ function convertNode(node: StyledNode | string, inherited: Record<string, string
 
   if (s.flexWrap) style.flexWrap = s.flexWrap;
   if (s.alignItems) style.alignItems = s.alignItems;
+  if (s.alignSelf) style.alignSelf = s.alignSelf;
+  // max-width + margin:0 auto → center this block within its parent column.
+  if (s.marginLeft === "auto" && s.marginRight === "auto") style.alignSelf = "center";
   // Skip justify-content: center on column containers — it causes massive vertical gaps
   // in snapshot mode since we don't have accurate heights
   if (s.justifyContent) {

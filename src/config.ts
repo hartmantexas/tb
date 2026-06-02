@@ -12,6 +12,8 @@ export interface TBConfig {
   screenshotDir: string;
   sessionPersistence: boolean;
   userDataDir?: string;
+  /** Launch Chromium with --ignore-certificate-errors (set via `tb --insecure`). */
+  insecure?: boolean;
 }
 
 const DEFAULTS: TBConfig = {

@@ -1,7 +1,8 @@
 import { CDPClient } from "./cdp.js";
 import type { EngineType } from "./engines/types.js";
-import { existsSync } from "fs";
+import { existsSync, readFileSync } from "fs";
 import { join } from "path";
+import { renderWithTakumi } from "./takumi-renderer.js";
 
 /**
  * Render HTML to PNG using Blitz (Rust-based renderer with Firefox's Stylo CSS engine).
@@ -801,6 +802,26 @@ export class Session {
 
   // --- Screenshots ---
 
+  /**
+   * Run the in-page CSS-cascade resolver (extract-resolved.js) and return the
+   * styled tree for Takumi. Lightpanda parses CSS + matches selectors but never
+   * folds the cascade into getComputedStyle, so we compute it ourselves.
+   */
+  private async extractResolvedTree(): Promise<unknown> {
+    const jsPath = join(new URL(".", import.meta.url).pathname, "extract-resolved.js");
+    if (!existsSync(jsPath)) return null;
+    const script = readFileSync(jsPath, "utf-8");
+    try {
+      const res = (await this.cdp.send("Runtime.evaluate", {
+        expression: script,
+        returnByValue: true,
+      })) as { result?: { value?: unknown } };
+      return res.result?.value ?? null;
+    } catch {
+      return null;
+    }
+  }
+
   async screenshot(options: {
     path?: string;
     fullPage?: boolean;
@@ -854,6 +875,14 @@ export class Session {
             const resp = await fetch(url);
             if (resp.ok) allCSS += await resp.text();
           } catch {}
+        }
+
+        // Make external CSS visible to the in-page resolver: inject it as a
+        // <style> into the LIVE DOM so document.styleSheets includes it.
+        if (allCSS) {
+          await this.cdp.send("Runtime.evaluate", {
+            expression: `(()=>{try{var s=document.createElement('style');s.textContent=${JSON.stringify(allCSS)};(document.head||document.documentElement).appendChild(s);}catch(e){}})()`,
+          }).catch(() => {});
         }
 
         // Inject CSS into HTML, remove external refs Blitz can't fetch,
@@ -913,7 +942,22 @@ export class Session {
         }
       } catch {}
 
-      const buffer = await renderHTML(fullHTML, options.width ?? 1280, options.height ?? 720);
+      const width = options.width ?? 1280;
+      const height = options.height ?? 720;
+
+      // Prefer Blitz (Rust/Stylo) when its binary is built. Otherwise resolve the
+      // CSS cascade in-page and paint with Takumi — far better than the old
+      // renderHTML→renderWithTakumi(null) fallback, which produced a blank page.
+      const blitzPath = join(new URL(".", import.meta.url).pathname, "..", "render-engine", "target", "release", "tb-render");
+      let buffer: Buffer;
+      if (existsSync(blitzPath)) {
+        buffer = await renderHTML(fullHTML, width, height);
+      } else {
+        const tree = await this.extractResolvedTree();
+        buffer = tree
+          ? await renderWithTakumi(tree, { width, height })
+          : await renderHTML(fullHTML, width, height);
+      }
 
       if (options.path) {
         const { writeFileSync } = await import("fs");

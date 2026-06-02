@@ -24,6 +24,8 @@ export interface LaunchOptions {
   width?: number;
   height?: number;
   userDataDir?: string;
+  /** Ignore TLS certificate errors (for TLS-intercepting proxies / self-signed certs). */
+  insecure?: boolean;
 }
 
 export interface Engine {

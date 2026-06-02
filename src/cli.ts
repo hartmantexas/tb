@@ -152,7 +152,7 @@ for (let i = 0; i < rawArgs.length; i++) {
     ) {
       // Peek ahead: known boolean flags don't consume next arg
       const flagName = arg.slice(2);
-      const booleanFlags = ["json", "help", "version", "new", "full-page"];
+      const booleanFlags = ["json", "help", "version", "new", "full-page", "insecure", "secure"];
       if (booleanFlags.includes(flagName)) {
         flags[flagName] = "true";
       } else {
@@ -196,6 +196,12 @@ const VIEWPORT_PRESETS: Record<string, { width: number; height: number }> = {
   tablet: { width: 768,  height: 1024 },  // iPad standard
   "4k":   { width: 3840, height: 2160 },  // 4K
 };
+// TLS cert handling: `--insecure` ignores cert errors (proxies/self-signed),
+// `--secure` resets it. Persisted in config; applied at engine launch, so set
+// it before `tb open` (like viewport). Restart the daemon to relaunch Chromium.
+if (flags.insecure === "true") saveConfig({ insecure: true });
+if (flags.secure === "true") saveConfig({ insecure: false });
+
 const rawViewport = flags.viewport || flags.w;
 if (rawViewport) {
   const preset = VIEWPORT_PRESETS[rawViewport.toLowerCase()];

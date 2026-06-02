@@ -143,6 +143,7 @@ export async function startDaemon(): Promise<void> {
             width: config.viewport.width,
             height: config.viewport.height,
             headless: !visible,
+            insecure: config.insecure,
           });
           engineProcesses.set(engineKey, ep);
         }
