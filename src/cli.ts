@@ -784,7 +784,6 @@ Examples:
               var target = els[${num} - 1];
               var rect = target.el.getBoundingClientRect();
               target.el.focus(); target.el.click();
-              target.el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: rect.x + rect.width/2, clientY: rect.y + rect.height/2 }));
               return { ok: true, type: target.type, text: target.text };
             })()`,
           }) as { ok: boolean; type?: string; text?: string } | null;
@@ -1949,7 +1948,6 @@ Examples:
                 if(${n}<1||${n}>els.length)return{ok:false};
                 var target=els[${n}-1];var rect=target.el.getBoundingClientRect();
                 target.el.focus();target.el.click();
-                target.el.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,clientX:rect.x+rect.width/2,clientY:rect.y+rect.height/2}));
                 return{ok:true,type:target.type,text:target.text}
               })()` });
             }

@@ -717,7 +717,6 @@ async function runCmd(raw){
       var n=\${m[1]};if(n<1||n>els.length)return false;
       var target=els[n-1];var rect=target.el.getBoundingClientRect();
       target.el.focus();target.el.click();
-      target.el.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,clientX:rect.x+rect.width/2,clientY:rect.y+rect.height/2}));
       return true})()\`});bmp();await new Promise(r=>setTimeout(r,300));continue}
     const cmd=p.split(/\\s+/);const c=cmd[0].toLowerCase();const arg=cmd.slice(1).join(' ');
     if(c==='tap'&&cmd[1]){await runCmd(cmd[1]);continue}

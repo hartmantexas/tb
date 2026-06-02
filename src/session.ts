@@ -510,8 +510,6 @@ export class Session {
         el.scrollIntoViewIfNeeded?.();
         el.focus();
         el.click();
-        var r = el.getBoundingClientRect();
-        el.dispatchEvent(new MouseEvent('click', {bubbles:true, clientX:r.x+r.width/2, clientY:r.y+r.height/2}));
         return true;
       })()`,
     });
