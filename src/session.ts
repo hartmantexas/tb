@@ -452,7 +452,7 @@ export class Session {
         var interactive = ${options.interactive ? 'true' : 'false'};
 
         // Walk semantic elements
-        var selectors = 'button, a[href], input, textarea, select, [role=button], [role=tab], [role=link], [role=menuitem], [contenteditable=true], summary, h1, h2, h3';
+        var selectors = 'button, a[href], input, textarea, select, [role=button], [role=tab], [role=link], [role=menuitem], [contenteditable=true], summary, h1, h2, h3, [onclick]';
         if (!interactive) selectors += ', nav, main, section, article, form';
 
         document.querySelectorAll(selectors).forEach(el => {
@@ -705,6 +705,7 @@ export class Session {
 
   async clickAt(x: number, y: number): Promise<void> {
     this.logDVR("clickAt", { x, y });
+    // JS-based click (works for SPAs, watch coordinate mapping, etc.)
     await this.cdp.send("Runtime.evaluate", {
       expression: `(() => {
         var el = document.elementFromPoint(${x}, ${y});
@@ -714,6 +715,16 @@ export class Session {
         target.click();
       })()`,
     });
+  }
+
+  /** Real CDP mouse click — for Turnstile/captcha that detect JS clicks */
+  async realClick(x: number, y: number): Promise<void> {
+    this.logDVR("realClick", { x, y });
+    await this.cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y });
+    await new Promise(r => setTimeout(r, 50));
+    await this.cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 });
+    await new Promise(r => setTimeout(r, 50));
+    await this.cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1 });
   }
 
   async typeText(text: string): Promise<void> {

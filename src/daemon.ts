@@ -282,6 +282,13 @@ export async function startDaemon(): Promise<void> {
             );
             result = { ok: true };
             break;
+          case "realClick":
+            await session.realClick(
+              params.x as number,
+              params.y as number,
+            );
+            result = { ok: true };
+            break;
           case "type":
             await session.type(
               params.selector as string,

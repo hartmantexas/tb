@@ -36,7 +36,7 @@ const EXTRACT_ELEMENTS_JS = `(() => {
     var sel = inp.id ? '#' + inp.id : (inp.name ? '[name="' + inp.name + '"]' : 'input:nth-of-type(' + (i+1) + ')');
     results.push({ type: 'input', text: label.trim().slice(0,50), value: val, selector: sel, _x: r.x, _y: r.y, _cx: r.x+r.width/2, _cy: r.y+r.height/2 });
   }
-  var btns = document.querySelectorAll('button, input[type="submit"], input[type="button"], [role="button"]');
+  var btns = document.querySelectorAll('button, input[type="submit"], input[type="button"], [role="button"], [onclick]');
   for (var j = 0; j < btns.length; j++) {
     var btn = btns[j];
     if (!vis(btn)) continue;
@@ -502,6 +502,17 @@ Examples:
         break;
       }
 
+      case "real-click": {
+        // CDP-level mouse click — bypasses bot detection (Cloudflare Turnstile etc.)
+        const rcx = parseInt(positional[0]);
+        const rcy = parseInt(positional[1]);
+        if (isNaN(rcx) || isNaN(rcy)) die("Usage: tb real-click <x> <y>");
+        await ensureDaemon();
+        await sessionCmd("realClick", { x: rcx, y: rcy });
+        output(jsonMode ? { ok: true, x: rcx, y: rcy } : `Real-clicked at (${rcx}, ${rcy})`);
+        break;
+      }
+
       case "type": {
         const selector = positional[0];
         const text = positional.slice(1).join(" ");
@@ -764,7 +775,7 @@ Examples:
               function inView(r) { return r.width > 5 && r.height > 5 && r.x + r.width > 0 && r.y + r.height > 0 && r.x < vw && r.y < vh; }
               var inputs = document.querySelectorAll('input[type="text"], input[type="search"], input[type="email"], input[type="password"], input[type="url"], input[type="number"], input:not([type]), textarea');
               for (var i = 0; i < inputs.length; i++) { if (inputs[i].type === 'hidden' || !vis(inputs[i])) continue; var r = inputs[i].getBoundingClientRect(); if (inView(r)) els.push({ el: inputs[i], type: 'input', text: (inputs[i].getAttribute('placeholder') || inputs[i].name || 'input').slice(0,50), y: r.y, x: r.x }); }
-              var btns = document.querySelectorAll('button, input[type="submit"], input[type="button"], [role="button"]');
+              var btns = document.querySelectorAll('button, input[type="submit"], input[type="button"], [role="button"], [onclick]');
               for (var j = 0; j < btns.length; j++) { if (!vis(btns[j])) continue; var t = (btns[j].textContent || btns[j].value || btns[j].getAttribute('aria-label') || '').trim().replace(/\\s+/g, ' '); if (!t || seen.has(t)) continue; seen.add(t); var r2 = btns[j].getBoundingClientRect(); if (inView(r2)) els.push({ el: btns[j], type: 'button', text: t.slice(0,50), y: r2.y, x: r2.x }); }
               var links = document.querySelectorAll('a[href]');
               for (var k = 0; k < links.length; k++) { if (!vis(links[k])) continue; var at = (links[k].textContent || '').trim().replace(/\\s+/g, ' '); if (!at || at.length < 2 || seen.has(at)) continue; seen.add(at); var r3 = links[k].getBoundingClientRect(); if (inView(r3)) els.push({ el: links[k], type: 'link', text: at.slice(0,50), y: r3.y, x: r3.x }); }

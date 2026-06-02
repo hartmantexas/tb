@@ -58,6 +58,68 @@ async function handleAPI(req: Request, url: URL): Promise<Response | null> {
     });
   }
 
+  // SSE screencast — push frames in real-time instead of polling
+  if (path === "/api/screencast") {
+    const sid = url.searchParams.get("session");
+    const quality = parseInt(url.searchParams.get("quality") || "70");
+    if (!sid) return Response.json({ error: "need session" }, { status: 400 });
+
+    // Start screencast if not already started
+    if (!screencastStarted.has(sid)) {
+      screencastStarted.add(sid);
+      await sessionCmd(sid, "startScreencast", { quality, maxWidth: config.viewport.width, maxHeight: config.viewport.height });
+    }
+
+    let alive = true;
+    const stream = new ReadableStream({
+      start(controller) {
+        const send = (data: string) => {
+          try { controller.enqueue(new TextEncoder().encode(`data: ${data}\n\n`)); } catch {}
+        };
+
+        const tick = async () => {
+          if (!alive) return;
+          try {
+            const [cached, pageUrl, title] = await Promise.all([
+              sessionCmd(sid, "getLatestFrame"),
+              sessionCmd(sid, "url"),
+              sessionCmd(sid, "title"),
+            ]);
+            const frame = cached as { base64: string; ts: number } | null;
+            if (frame?.base64) {
+              send(JSON.stringify({ base64: frame.base64, url: pageUrl, title, w: config.viewport.width, h: config.viewport.height }));
+            }
+          } catch {}
+          if (alive) setTimeout(tick, 33);
+        };
+        tick();
+      },
+      cancel() {
+        alive = false;
+      },
+    });
+
+    return new Response(stream, {
+      headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "Connection": "keep-alive" },
+    });
+  }
+
+  // Real input — forward mouse/keyboard via CDP (not JS .click())
+  if (path === "/api/input" && req.method === "POST") {
+    const body = (await req.json()) as { sessionId: string; type: string; params: Record<string, unknown> };
+    const { sessionId: sid, type, params } = body;
+    if (type === "mousedown") {
+      await sessionCmd(sid, "realClick", { x: params.x, y: params.y });
+    } else if (type === "scroll") {
+      await sessionCmd(sid, "scroll", params);
+    } else if (type === "keydown") {
+      await sessionCmd(sid, "keyPress", params);
+    } else if (type === "type") {
+      await sessionCmd(sid, "typeText", params);
+    }
+    return Response.json({ ok: true });
+  }
+
   if (path === "/api/cmd" && req.method === "POST") {
     const body = (await req.json()) as { sessionId: string; method: string; params: Record<string, unknown> };
     return Response.json({ result: await sessionCmd(body.sessionId, body.method, body.params) });
@@ -488,10 +550,12 @@ function renderBookmarks(){
 }
 renderBookmarks();
 
+// Fast adaptive polling — 150ms active, 500ms idle
 async function frame(){
  if(busy)return;busy=1;
  try{
-  const d=await(await fetch('/api/frame?session='+S+'&quality='+(act?55:70))).json();
+  const q=act?80:70;
+  const d=await(await fetch('/api/frame?session='+S+'&quality='+q)).json();
   if(d.base64){I.src='data:image/jpeg;base64,'+d.base64;W=d.w||W;H=d.h||H}
   if(d.url&&document.activeElement!==U)U.value=d.url;
   if(d.title)document.title='tb — '+activeTabName()+' — '+d.title;
@@ -502,8 +566,9 @@ async function frame(){
 
 function bmp(){act=1;clearTimeout(bmp.t);bmp.t=setTimeout(()=>act=0,3000);setTimeout(frame,50)}
 
-// Map click position to page coordinates.
-// Accounts for object-fit:contain letterboxing when window aspect != page aspect.
+// Adaptive poll loop — fast when active, slow when idle
+(function poll(){frame().then(()=>setTimeout(poll,act?150:500))})();
+
 function s2p(ox,oy){
  const ew=I.clientWidth,eh=I.clientHeight;
  const nw=I.naturalWidth||W,nh=I.naturalHeight||H;
@@ -522,7 +587,6 @@ I.addEventListener('click',e=>{
 });
 I.addEventListener('mousedown',e=>e.preventDefault());
 
-// Cursor: ask the page what's under the mouse (throttled)
 let ct;
 I.addEventListener('mousemove',e=>{
  clearTimeout(ct);
@@ -1110,7 +1174,7 @@ async function frames(){
  }
  await Promise.all(allTiles.map(async({gk,sid})=>{
    try{
-     const d=await(await fetch('/api/frame?session='+sid+'&quality='+(sid===focused?55:30))).json();
+     const d=await(await fetch('/api/frame?session='+sid+'&quality='+(sid===focused?80:60))).json();
      const w=windows[gk];if(!w)return;
      const img=w.el.querySelector('img[data-sid="'+sid+'"]');
      if(img&&d.base64){img.src='data:image/jpeg;base64,'+d.base64;W=d.w||W;H=d.h||H}
