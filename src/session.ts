@@ -252,10 +252,15 @@ export class Session {
   private screencastActive = false;
   private onScreencastFrame: ((base64: string) => void) | null = null;
 
+  private viewport: { width: number; height: number };
+
   constructor(
     private cdp: CDPClient,
     private engineType: "lightpanda" | "chromium",
-  ) {}
+    viewport?: { width: number; height: number },
+  ) {
+    this.viewport = viewport ?? { width: 1280, height: 720 };
+  }
 
   async init(): Promise<void> {
     if (this.engineType === "lightpanda") {
@@ -893,8 +898,8 @@ export class Session {
         // Build the Blitz HTML: original markup, external CSS inlined, scripts and
         // un-fetchable stylesheet links dropped, and a root sized to the viewport.
         {
-          const W = options.width ?? 1280;
-          const H = options.height ?? 720;
+          const W = options.width ?? this.viewport.width;
+          const H = options.height ?? this.viewport.height;
           const normalize = `<style>html{width:${W}px;min-height:${H}px;display:flex}body{width:100%;margin:0}</style>`;
           const cssTag = allCSS ? `<style>${allCSS}</style>` : "";
           let bh = blitzHTML
@@ -962,8 +967,8 @@ export class Session {
         }
       } catch {}
 
-      const width = options.width ?? 1280;
-      const height = options.height ?? 720;
+      const width = options.width ?? this.viewport.width;
+      const height = options.height ?? this.viewport.height;
 
       // Prefer Blitz (Rust/Stylo) when its binary is built. Otherwise resolve the
       // CSS cascade in-page and paint with Takumi — far better than the old
@@ -1194,6 +1199,7 @@ export class Session {
   }
 
   async setViewport(width: number, height: number): Promise<void> {
+    this.viewport = { width, height };
     await this.cdp.send("Emulation.setDeviceMetricsOverride", {
       width, height,
       deviceScaleFactor: 1,

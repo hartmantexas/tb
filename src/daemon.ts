@@ -175,7 +175,10 @@ export async function startDaemon(): Promise<void> {
         const cdp = new CDPClient(targetWsUrl);
         await cdp.connect();
 
-        const session = new Session(cdp, engine.type);
+        const session = new Session(cdp, engine.type, {
+          width: config.viewport.width,
+          height: config.viewport.height,
+        });
         await session.init();
         await session.enableEvents(); // Always capture events
         session.enableDVR(); // Always log actions
