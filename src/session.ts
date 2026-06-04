@@ -22,8 +22,11 @@ async function renderHTML(html: string, width = 1280, height = 720, baseUrl = "h
         stdout: "pipe",
         stderr: "pipe",
       });
+      // Guard against a pathological page hanging the render forever.
+      const timeout = setTimeout(() => { try { proc.kill(); } catch {} }, 20000);
       const output = await new Response(proc.stdout).arrayBuffer();
       const exitCode = await proc.exited;
+      clearTimeout(timeout);
       if (exitCode === 0 && output.byteLength > 100) {
         // Strip any non-PNG bytes (Blitz CSS parser may print warnings to stdout)
         const buf = Buffer.from(output);
