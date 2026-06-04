@@ -8,15 +8,16 @@ import { renderWithTakumi } from "./takumi-renderer.js";
  * Render HTML to PNG using Blitz (Rust-based renderer with Firefox's Stylo CSS engine).
  * Falls back to Takumi if Blitz binary isn't available.
  */
-async function renderHTML(html: string, width = 1280, height = 720, baseUrl = "https://localhost/"): Promise<Buffer> {
+async function renderHTML(html: string, width = 1280, height = 720, baseUrl = "https://localhost/", fullPage = false): Promise<Buffer> {
   // Try Blitz first (full CSS rendering)
   const blitzPath = join(new URL(".", import.meta.url).pathname, "..", "render-engine", "target", "release", "tb-render");
 
   if (existsSync(blitzPath)) {
     try {
-      // argv: width height scale base_url — base_url lets relative resource URLs
-      // resolve (and prevents a panic on protocol-relative URLs on real pages).
-      const proc = Bun.spawn([blitzPath, String(width), String(height), "2", baseUrl], {
+      // argv: width height scale base_url [full] — base_url lets relative resource
+      // URLs resolve (and prevents a panic on protocol-relative URLs); "full"
+      // renders the entire document height instead of just the viewport.
+      const proc = Bun.spawn([blitzPath, String(width), String(height), "2", baseUrl, fullPage ? "full" : ""], {
         stdin: new Blob([html]),
         stdout: "pipe",
         stderr: "pipe",
@@ -978,7 +979,7 @@ export class Session {
       let buffer: Buffer;
       if (existsSync(blitzPath)) {
         // Pixel-perfect: real Stylo/Taffy/Vello rendering of near-original HTML.
-        buffer = await renderHTML(blitzHTML, width, height, pageUrl);
+        buffer = await renderHTML(blitzHTML, width, height, pageUrl, !!options.fullPage);
       } else {
         // No Blitz binary: in-page cascade resolver → Takumi approximation.
         const tree = await this.extractResolvedTree();

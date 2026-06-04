@@ -61,9 +61,19 @@ fn main() {
     let mut document = HtmlDocument::from_html(&html, doc_config);
     document.resolve(0.0);
 
-    // Output buffer is the viewport scaled by the device pixel ratio.
+    // Full-page mode (argv[5] == "full"): render the entire laid-out document
+    // height instead of just the viewport. Capped to keep buffers sane.
+    let full_page = args.get(5).map(|s| s == "full").unwrap_or(false);
+    let css_height: u32 = if full_page {
+        let content_h = document.as_ref().root_element().final_layout.size.height as u32;
+        content_h.max(height).min(30_000)
+    } else {
+        height
+    };
+
+    // Output buffer is the (viewport or full content) size scaled by the DPR.
     let render_width = (width as f32 * scale) as u32;
-    let render_height = (height as f32 * scale) as u32;
+    let render_height = (css_height as f32 * scale) as u32;
 
     let buffer = render_to_buffer::<VelloCpuImageRenderer, _>(
         |scene| {
