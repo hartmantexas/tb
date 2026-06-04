@@ -25,6 +25,14 @@ fn main() {
     let height: u32 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(720);
     // Default to 2x so screenshots are crisp at normal screen sizes.
     let scale: f32 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(2.0);
+    // Base URL for resolving relative resource URLs. MUST be a valid absolute URL
+    // with a real scheme/host, otherwise Blitz panics resolving protocol-relative
+    // (`//host/...`) or relative URLs against it. Defaults to a harmless https base
+    // so a single bad <img>/url() on a real page can never crash the render.
+    let base_url: String = match args.get(4) {
+        Some(u) if u.starts_with("http://") || u.starts_with("https://") => u.clone(),
+        _ => "https://localhost/".to_string(),
+    };
 
     let mut html = String::new();
     if std::io::stdin().read_to_string(&mut html).is_err() {
@@ -32,10 +40,22 @@ fn main() {
         std::process::exit(1);
     }
 
+    // Save the real stdout, then point fd 1 at stderr so any library chatter
+    // (html5ever parse errors, etc.) can't corrupt the PNG byte stream. We write
+    // the PNG to the saved fd at the end.
+    let real_stdout_fd: i32 = unsafe {
+        let saved = libc::dup(1);
+        if saved >= 0 {
+            libc::dup2(2, 1);
+        }
+        saved
+    };
+
     // Build the document at the requested viewport, then resolve styles + layout.
     let viewport = Viewport::new(width, height, scale, ColorScheme::Light);
     let doc_config = DocumentConfig {
         viewport: Some(viewport),
+        base_url: Some(base_url),
         ..Default::default()
     };
     let mut document = HtmlDocument::from_html(&html, doc_config);
@@ -69,9 +89,13 @@ fn main() {
         writer.write_image_data(&buffer).expect("png data");
     }
 
-    let stdout = std::io::stdout();
-    let mut lock = stdout.lock();
-    if lock.write_all(&out).is_err() {
-        std::process::exit(1);
+    // Write the PNG to the real stdout we saved before redirecting fd 1.
+    use std::os::unix::io::FromRawFd;
+    if real_stdout_fd >= 0 {
+        let mut real_stdout = unsafe { std::fs::File::from_raw_fd(real_stdout_fd) };
+        let _ = real_stdout.write_all(&out);
+        let _ = real_stdout.flush();
+    } else {
+        let _ = std::io::stdout().write_all(&out);
     }
 }

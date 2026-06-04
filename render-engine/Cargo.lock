@@ -1883,6 +1883,7 @@ dependencies = [
  "blitz-html",
  "blitz-paint",
  "blitz-traits",
+ "libc",
  "png",
 ]
 

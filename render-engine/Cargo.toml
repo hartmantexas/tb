@@ -27,6 +27,10 @@ anyrender_vello_cpu = "0.7"
 # PNG encoding.
 png = "0.17"
 
+# Low-level fd redirection: Blitz's HTML parser prints recoverable parse errors
+# to stdout; we redirect that noise to stderr so stdout carries only the PNG.
+libc = "0.2"
+
 [profile.release]
 opt-level = 2
 lto = false
