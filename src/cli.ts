@@ -621,6 +621,13 @@ Examples:
         break;
       }
 
+      case "doctor":
+      case "setup": {
+        const { doctor } = await import("./commands/doctor.js");
+        await doctor();
+        break;
+      }
+
       case "engines": {
         const engines = await detectEngines();
         if (jsonMode) {

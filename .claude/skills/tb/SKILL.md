@@ -9,14 +9,24 @@ user-invocable: true
 Use `tb` to browse websites, take screenshots, fill forms, and interact with page elements.
 The number system lets you see and click elements without knowing CSS selectors.
 
+## Setup (if `tb` isn't installed)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hartmantexas/tb/main/install.sh | bash
+export PATH="$HOME/.local/bin:$PATH"
+tb doctor                         # verify engines + screenshot quality
+```
+
 ## Quick Start
 
 ```bash
-tb open <url> -e c                # Open with Chromium (use -e c for real sites)
+tb -w fhd open <url> -e c          # Open with Chromium at 1920x1080 (best for screenshots)
 tb elements                       # See numbered interactive elements
 tb tap <n>                        # Click element by number
 tb screenshot /tmp/page.png       # Take screenshot
 ```
+
+**For screenshots, always set `-w fhd`** (1920x1080) before `open` — it gives crisp, well-proportioned captures. Use `-w mobile` etc. only when you specifically want to test that device size.
 
 ## Core Commands
 

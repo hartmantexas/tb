@@ -14,7 +14,7 @@ tb batch 'url ; scrape ; screenshot /tmp/s.png'   # multi-command, one call
 tb scrape --group research                        # hit all tabs at once
 ```
 
-**64MB RAM** with Lightpanda vs **829MB** with Chrome. Screenshots work on both engines — Lightpanda uses a built-in satori renderer (DOM to SVG to PNG, no browser needed).
+**64MB RAM** with Lightpanda vs **829MB** with Chrome. Screenshots work on both engines — Lightpanda pairs with the **Blitz render engine** (Firefox's Stylo CSS engine + Taffy layout + a Vello CPU painter, ~18MB binary) to paint pixel-perfect PNGs with no browser. Chromium gives native pixel-perfect capture when you need it.
 
 ## The Number System
 
@@ -122,22 +122,55 @@ Every AI agent needs a browser. The options are all bad:
 
 ## Install
 
+**One command** (installs bun if needed, fetches the source, links `tb` onto your PATH, downloads Lightpanda, builds the Blitz render engine, and runs `tb doctor`):
+
 ```bash
-# Clone and link
+curl -fsSL https://raw.githubusercontent.com/hartmantexas/tb/main/install.sh | bash
+```
+
+Then verify:
+
+```bash
+tb doctor      # shows engines, screenshot quality, and what (if anything) to install next
+```
+
+<details>
+<summary>Manual install</summary>
+
+```bash
 git clone https://github.com/hartmantexas/tb.git
 cd tb
 bun install
-bun link
+ln -sf "$PWD/bin/tb" ~/.local/bin/tb   # put `tb` on PATH (or: bun link)
 
-# Install browser engines
-tb install lightpanda   # 63MB download, 64MB RAM
-tb install chromium     # 100MB headless shell (or uses existing Chrome)
+tb install lightpanda     # 63MB download, 64MB RAM — default engine
+tb install render-engine  # builds Blitz (needs Rust) — pixel-perfect screenshots
+tb install chromium       # optional; auto-detects existing Chrome/Brave/Arc/Edge
+```
+</details>
 
-# Check what's available
-tb engines
+If you already have Chrome/Brave/Arc installed, `tb` auto-detects them — no extra download needed for the Chromium path.
+
+### For AI agents (Claude & friends)
+
+To set `tb` up in any environment and use it as a browser tool — e.g. *"please get tb from hartmantexas/tb"*:
+
+```bash
+# 1. Install (idempotent — safe to re-run)
+curl -fsSL https://raw.githubusercontent.com/hartmantexas/tb/main/install.sh | bash
+export PATH="$HOME/.local/bin:$PATH"
+
+# 2. Confirm it's ready
+tb doctor
+
+# 3. Use it — pixel-perfect screenshots are best at fhd
+tb -w fhd open https://example.com
+tb screenshot shot.png        # PNG you can read/inspect
+tb read https://example.com   # structured text/data, no screenshot needed
+tb elements && tb tap 3       # interact by number, no selectors
 ```
 
-If you already have Chrome/Brave/Arc installed, `tb` auto-detects them. No extra download needed for Chromium.
+`tb doctor` reports the screenshot quality (PIXEL-PERFECT when the Blitz engine is built) and the exact command to fix anything missing. Building Blitz needs Rust; without it, screenshots still work via an approximation fallback or via Chromium (`-e c`).
 
 ## CLI
 
@@ -159,9 +192,9 @@ tb screenshot --full-page              # Full page scroll capture
 tb screenshot --format jpeg --quality 80
 ```
 
-Screenshots work on **both engines**:
+Screenshots work on **both engines** (use `-w fhd` for crisp, well-proportioned captures):
 - **Chromium**: pixel-perfect via CDP `Page.captureScreenshot`
-- **Lightpanda**: DOM-to-image via satori + resvg (no browser rendering needed)
+- **Lightpanda + Blitz**: pixel-perfect via the Stylo/Taffy/Vello render engine — real gradients, grid, flexbox, tables, media-query reflow, at 2× retina, no browser. Falls back to a CSS-cascade approximation if the Blitz binary isn't built.
 
 ### Element Interaction (Number System)
 ```bash
@@ -290,13 +323,13 @@ curl http://localhost:7171/cookies
 - **Daemon pattern**: Browser engines stay warm between commands. First command starts the daemon and engine (~1s). Subsequent commands: <100ms.
 - **Engine auto-selection**: `auto` mode picks Lightpanda for everything. If you explicitly use `--engine chromium`, it'll use Chrome.
 - **Session isolation**: Each `tb open --new` creates an independent session. Multiple agents can use `tb` concurrently with `--session <id>`.
-- **Zero npm deps for core**: The CLI, daemon, CDP client, and engine management use only bun/node built-ins. Only satori + resvg are external (for the DOM-to-image renderer).
+- **Lean core**: The CLI, daemon, CDP client, and engine management use only bun/node built-ins. Pixel-perfect screenshots come from the standalone **Blitz** binary (Rust); the JS approximation fallback uses takumi/satori + resvg.
 
 ## Engines
 
 | Engine | RAM | Screenshot | JS | CSS Rendering | Install Size |
 |--------|-----|------------|-----|---------------|-------------|
-| **Lightpanda** | 64MB | Via satori (DOM→PNG) | V8 | None (DOM only) | 63MB |
+| **Lightpanda + Blitz** | 64MB | Pixel-perfect (Stylo/Vello) | V8 | Full (Stylo) | 63MB + 18MB |
 | **Chromium** | 829MB | Native (pixel-perfect) | V8 | Full | 100-684MB |
 
 **When to use which:**
@@ -475,7 +508,7 @@ tb events                          # Live console, navigation, network errors
 ├── engines/
 │   ├── lightpanda       # Lightpanda binary
 │   └── chromium/        # Chrome headless shell
-└── fonts/               # Custom fonts for satori renderer
+└── fonts/               # Custom fonts for the fallback renderer
     └── *.ttf            # Place .ttf files here
 ```
 
