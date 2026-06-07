@@ -227,8 +227,12 @@ async function installRenderEngine(): Promise<void> {
   const engineDir = join(repoRoot, "render-engine");
   const binPath = join(engineDir, "target", "release", "tb-render");
 
-  if (existsSync(binPath)) {
-    console.log(`${check} Blitz render engine already built at ${binPath}`);
+  const { resolveBlitzPath, blitzSuffix } = await import("../blitz-path.js");
+
+  // 1. Already available (freshly built or committed prebuilt)?
+  const existing = resolveBlitzPath();
+  if (existing) {
+    console.log(`${check} Blitz render engine ready at ${existing}`);
     return;
   }
   if (!existsSync(join(engineDir, "Cargo.toml"))) {
@@ -236,7 +240,29 @@ async function installRenderEngine(): Promise<void> {
     process.exit(1);
   }
 
-  // Need a Rust toolchain.
+  // 2. Try a prebuilt binary from GitHub releases (instant, no Rust needed).
+  const suffix = blitzSuffix();
+  const url = `https://github.com/hartmantexas/tb/releases/latest/download/tb-render-${suffix}`;
+  const prebuiltDir = join(engineDir, "prebuilt");
+  const prebuiltPath = join(prebuiltDir, `tb-render-${suffix}`);
+  try {
+    const resp = await fetch(url);
+    if (resp.ok) {
+      const buf = Buffer.from(await resp.arrayBuffer());
+      if (buf.length > 1_000_000) {
+        mkdirSync(prebuiltDir, { recursive: true });
+        writeFileSync(prebuiltPath, buf);
+        chmodSync(prebuiltPath, 0o755);
+        console.log(`${check} Downloaded prebuilt Blitz engine (${formatSize(buf.length)}) — ${suffix}`);
+        console.log(`   ${dim(`Path: ${prebuiltPath}`)}`);
+        return;
+      }
+    }
+  } catch {
+    // no release / offline — fall through to building
+  }
+
+  // 3. Build from source. Need a Rust toolchain.
   let hasCargo = false;
   try {
     execSync("cargo --version", { stdio: "pipe" });

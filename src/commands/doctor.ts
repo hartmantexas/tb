@@ -81,10 +81,11 @@ export async function doctor(): Promise<void> {
   const lpOk = existsSync(lp);
   console.log(`  ${lpOk ? ok : no} Lightpanda    ${lpOk ? dim(lp) : yellow("not installed — run: tb install lightpanda")}`);
 
-  // Blitz render engine (pixel-perfect lightweight screenshots)
-  const blitz = join(new URL(".", import.meta.url).pathname, "..", "..", "render-engine", "target", "release", "tb-render");
-  const blitzOk = existsSync(blitz);
-  console.log(`  ${blitzOk ? ok : no} Blitz engine  ${blitzOk ? dim(`${blitz} (${fmtSize(blitz)})`) : yellow("not built — run: tb install render-engine")}`);
+  // Blitz render engine (pixel-perfect lightweight screenshots) — built or prebuilt
+  const { resolveBlitzPath } = await import("../blitz-path.js");
+  const blitz = resolveBlitzPath();
+  const blitzOk = !!blitz;
+  console.log(`  ${blitzOk ? ok : no} Blitz engine  ${blitzOk ? dim(`${blitz} (${fmtSize(blitz!)})`) : yellow("not built — run: tb install render-engine")}`);
 
   // Chromium (pixel-perfect, full browser)
   const chrome = findChromium();
