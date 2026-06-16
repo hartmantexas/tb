@@ -280,9 +280,16 @@ async function getSession(needsScreenshot = false): Promise<string> {
       ...(sessionName ? { name: sessionName } : {}),
       ...(flags.group ? { group: flags.group } : {}),
     },
-  })) as { sessionId: string; engine: string; name?: string };
+  })) as { sessionId: string; engine: string; name?: string; sessions?: number; limit?: number };
 
   currentSessionId = result.sessionId;
+  // Awareness: nudge the agent to clean up before they pile up and OOM the machine.
+  if (!jsonMode && result.sessions && result.sessions >= 10) {
+    const limit = result.limit ?? 25;
+    console.error(
+      `\x1b[33m⚠ ${result.sessions}/${limit} sessions active.\x1b[0m Close ones you're done with: \x1b[1mtb kill <name>\x1b[0m (or \x1b[1mtb stop\x1b[0m to end all).`,
+    );
+  }
   return currentSessionId;
 }
 
@@ -621,6 +628,24 @@ Examples:
       case "setup": {
         const { doctor } = await import("./commands/doctor.js");
         await doctor();
+        break;
+      }
+
+      case "config": {
+        const key = positional[0];
+        const cfg = loadConfig();
+        if (!key) {
+          output(jsonMode ? cfg : Object.entries(cfg).map(([k, v]) => `  ${k} = ${JSON.stringify(v)}`).join("\n"));
+          break;
+        }
+        if (key === "max-sessions") {
+          const n = parseInt(positional[1] ?? "", 10);
+          if (!Number.isFinite(n) || n < 1) die("Usage: tb config max-sessions <n>");
+          saveConfig({ maxSessions: n });
+          output(jsonMode ? { maxSessions: n } : `max-sessions = ${n}`);
+        } else {
+          die(`Unknown config key: ${key}. Known: max-sessions`);
+        }
         break;
       }
 

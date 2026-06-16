@@ -133,6 +133,21 @@ export async function startDaemon(): Promise<void> {
         const needsScreenshot = body.needsScreenshot ?? false;
         const visible = body.visible ?? false;
 
+        // Safety cap: stop runaway tab creation (40 tabs can OOM a machine).
+        // Read live so `tb config max-sessions <n>` applies without a restart.
+        const maxSessions = loadConfig().maxSessions ?? 25;
+        if (sessions.size >= maxSessions) {
+          return Response.json(
+            {
+              error: `Session limit reached (${sessions.size}/${maxSessions}). ` +
+                `Close some with 'tb kill <name>' or 'tb stop', or raise the cap with 'tb config max-sessions <n>'.`,
+              sessions: sessions.size,
+              limit: maxSessions,
+            },
+            { status: 429 },
+          );
+        }
+
         const engine = await resolveEngine(engineType, needsScreenshot);
 
         // Visible sessions get their own engine instance (non-headless Chrome)
@@ -205,6 +220,8 @@ export async function startDaemon(): Promise<void> {
           name: body.name,
           engine: engine.type,
           wsUrl: targetWsUrl,
+          sessions: sessions.size,
+          limit: maxSessions,
         });
       }
 

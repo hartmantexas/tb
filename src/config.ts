@@ -14,6 +14,8 @@ export interface TBConfig {
   userDataDir?: string;
   /** Launch Chromium with --ignore-certificate-errors (set via `tb --insecure`). */
   insecure?: boolean;
+  /** Safety cap on concurrent sessions to prevent runaway tab creation. */
+  maxSessions?: number;
 }
 
 const DEFAULTS: TBConfig = {
@@ -22,6 +24,7 @@ const DEFAULTS: TBConfig = {
   viewport: { width: 1280, height: 720 },
   screenshotDir: "/tmp",
   sessionPersistence: false,
+  maxSessions: 25,
 };
 
 export function loadConfig(): TBConfig {
