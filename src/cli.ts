@@ -148,7 +148,7 @@ for (let i = 0; i < rawArgs.length; i++) {
     ) {
       // Peek ahead: known boolean flags don't consume next arg
       const flagName = arg.slice(2);
-      const booleanFlags = ["json", "help", "version", "new", "full-page", "insecure", "secure"];
+      const booleanFlags = ["json", "help", "version", "new", "full-page", "insecure", "secure", "keep"];
       if (booleanFlags.includes(flagName)) {
         flags[flagName] = "true";
       } else {
@@ -343,6 +343,7 @@ Usage: tb <command> [args] [flags]
 Commands:
   open <url>              Navigate to a URL
   screenshot [path]       Take a screenshot (--open to view)
+  shots <url> [outdir]    Capture across viewports (--viewports fhd,mobile,ipad)
   elements                List interactive elements with numbers
   tap <number>            Click element by number (from elements)
   annotate [path]         Screenshot with numbered overlay badges
@@ -499,6 +500,47 @@ Examples:
             execSync(`open "${path}"`, { stdio: "ignore" });
           } catch {}
         }
+        break;
+      }
+
+      case "shots": {
+        // Capture one page across several viewports — responsive QA + marketing.
+        //   tb shots <url> [outdir] [--viewports fhd,mobile,ipad] [-e c] [--keep]
+        await ensureDaemon();
+        const shotUrl = positional[0];
+        const outDir = positional[1] || TB_HOME;
+        const vpNames = (flags.viewports || "fhd,mac,ipad,mobile").split(",").map(s => s.trim()).filter(Boolean);
+        const bad = vpNames.filter(n => !VIEWPORT_PRESETS[n]);
+        if (bad.length) die(`Unknown viewport(s): ${bad.join(", ")}. Known: ${Object.keys(VIEWPORT_PRESETS).join(", ")}`);
+        if (!existsSync(outDir)) mkdirSync(outDir, { recursive: true });
+
+        // If a URL is given (and no explicit session), use a dedicated throwaway
+        // session and clean it up after — good hygiene for one-off captures.
+        const ownSession = !!shotUrl && !flags.session;
+        if (ownSession) {
+          flags.name = flags.name || flags.n || `shots-${Date.now().toString(36)}`;
+          flags.new = "true";
+          await getSession();
+          await sessionCmd("goto", { url: shotUrl });
+        } else if (shotUrl) {
+          await sessionCmd("goto", { url: shotUrl });
+        }
+
+        const slug = (shotUrl || "page").replace(/^https?:\/\//, "").replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "").slice(0, 40) || "page";
+        const made: Array<{ viewport: string; path: string; size: string }> = [];
+        for (const name of vpNames) {
+          const vp = VIEWPORT_PRESETS[name];
+          await sessionCmd("setViewport", { width: vp.width, height: vp.height });
+          const p = join(outDir, `${slug}-${name}.png`);
+          const r = (await sessionCmd("screenshot", { path: p }, true)) as { size: number };
+          made.push({ viewport: `${name} (${vp.width}x${vp.height})`, path: p, size: formatBytes(r.size) });
+          if (!jsonMode) console.log(`  ${name.padEnd(7)} ${`${vp.width}x${vp.height}`.padEnd(11)} ${p} (${formatBytes(r.size)})`);
+        }
+        if (ownSession && flags.keep !== "true") {
+          await daemonFetch(`/session/${currentSessionId}`, { method: "DELETE" }).catch(() => {});
+          if (!jsonMode) console.log(`  ${"\x1b[2m"}(session closed)\x1b[0m`);
+        }
+        output(jsonMode ? { shots: made } : `\n${made.length} shot(s) → ${outDir}`);
         break;
       }
 

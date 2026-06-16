@@ -1204,12 +1204,14 @@ export class Session {
   }
 
   async setViewport(width: number, height: number): Promise<void> {
+    // Always record the viewport (drives Blitz render size). The CDP emulation
+    // call is best-effort — Lightpanda may not implement the Emulation domain.
     this.viewport = { width, height };
     await this.cdp.send("Emulation.setDeviceMetricsOverride", {
       width, height,
       deviceScaleFactor: 1,
       mobile: width < 768,
-    });
+    }).catch(() => {});
   }
 
   /** Get full auth state: cookies + localStorage + sessionStorage */
