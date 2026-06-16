@@ -190,6 +190,7 @@ tb screenshot ./shot.png               # Save to specific path
 tb screenshot --open                   # Save and open in Preview
 tb screenshot --full-page              # Full page scroll capture
 tb screenshot --format jpeg --quality 80
+tb shots <url> /tmp/out --viewports fhd,ipad,mobile  # One page, many viewports
 ```
 
 Screenshots work on **both engines** (use `-w fhd` for crisp, well-proportioned captures):

@@ -45,9 +45,27 @@ tb screenshot /tmp/page.png       # Take screenshot
 | `tb text` | Get page text |
 | `tb title` | Get page title |
 | `tb url` | Get current URL |
-| `tb ps` | List active sessions |
+| `tb shots <url> [outdir]` | Capture across viewports (`--viewports fhd,mobile,ipad`) |
+| `tb ps` | List active sessions (shows names) |
 | `tb kill <id-or-name>` | Kill a session |
 | `tb stop` | Stop daemon and all engines |
+
+## Session Lifecycle — close what you open
+
+Every `tb open --new` spawns a session that stays alive until killed. They are
+**not** garbage-collected. Be disciplined:
+
+- **Close sessions when done.** `tb kill <name>` for one, `tb stop` to end all.
+- **One-off tasks (e.g. a single research scrape): close on completion.** Open →
+  read/scrape → `tb kill <name>`. Don't leave it running.
+- **Reuse, don't multiply.** For multi-step work on the same site, keep using the
+  same `--session <name>` instead of opening new tabs.
+- **Check before you spawn.** `tb ps` shows what's already running. Aim to keep
+  well under ~10–15 concurrent.
+- **There is a hard cap** (default 25, `tb config max-sessions <n>`). Past it,
+  `open` is refused — don't loop trying; close some first. For wide fan-out
+  (distributed research), open a batch, finish it, **close it**, then continue —
+  don't open 40 at once.
 
 ## The Number System
 
@@ -176,6 +194,13 @@ tb kill agent2
 Set viewport BEFORE `open` — it configures the engine at launch:
 ```bash
 tb -w fhd open http://localhost:3000 -e c
+```
+
+**Capture several at once** — responsive QA or marketing shots, one command (opens
+a throwaway session and closes it automatically):
+```bash
+tb shots http://localhost:3000 /tmp/shots --viewports fhd,ipad,mobile
+# → /tmp/shots/<page>-fhd.png, -ipad.png, -mobile.png  (real reflow per size)
 ```
 
 ## Engine Selection
