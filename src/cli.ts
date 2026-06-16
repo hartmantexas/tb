@@ -70,22 +70,41 @@ const EXTRACT_ELEMENTS_JS = `(() => {
   return results;
 })()`;
 
-/** Inject floating overlay number badges — positioned absolute over elements, not inline */
+/**
+ * Inject floating overlay number badges. MUST collect + order elements identically
+ * to EXTRACT_ELEMENTS_JS (same selectors, visibility hit-test, dedup, and y/x sort)
+ * so badge #N is always the same element as `tb elements` #N and `tb tap N`.
+ */
 const INJECT_OVERLAY_BADGES_JS = `(() => {
   document.querySelectorAll('.tb-overlay-badge').forEach(function(b) { b.remove(); });
-  var idx = 1;
-  var seen = new Set();
-  function badge(el, num, color) {
-    var rect = el.getBoundingClientRect();
-    if (rect.width === 0 || rect.height === 0) return;
+  var results = [], seen = new Set(), vw = window.innerWidth, vh = window.innerHeight;
+  function vis(el) {
+    try { if (getComputedStyle(el).display === 'none' || el.offsetParent === null) return false; } catch(e) { return false; }
+    var r = el.getBoundingClientRect();
+    if (r.width < 2 || r.height < 2) return false;
+    var hit = document.elementFromPoint(r.x + r.width/2, r.y + r.height/2);
+    return hit && (hit === el || el.contains(hit) || (hit.closest && hit.closest('a,button') === el));
+  }
+  function inView(r) { return r.width > 5 && r.height > 5 && r.x + r.width > 0 && r.y + r.height > 0 && r.x < vw && r.y < vh; }
+  var inputs = document.querySelectorAll('input[type="text"], input[type="search"], input[type="email"], input[type="password"], input[type="url"], input[type="number"], input:not([type]), textarea');
+  for (var i = 0; i < inputs.length; i++) { var inp = inputs[i]; if (inp.type === 'hidden' || !vis(inp)) continue; var r = inp.getBoundingClientRect(); if (!inView(r)) continue; results.push({ el: inp, type: 'input', _x: r.x, _y: r.y }); }
+  var btns = document.querySelectorAll('button, input[type="submit"], input[type="button"], [role="button"], [onclick]');
+  for (var j = 0; j < btns.length; j++) { var btn = btns[j]; if (!vis(btn)) continue; var t = (btn.textContent || btn.value || btn.getAttribute('aria-label') || '').trim().replace(/\\s+/g, ' '); if (!t || seen.has(t)) continue; seen.add(t); var r2 = btn.getBoundingClientRect(); if (!inView(r2)) continue; results.push({ el: btn, type: 'button', _x: r2.x, _y: r2.y }); }
+  var links = document.querySelectorAll('a[href]');
+  for (var k = 0; k < links.length; k++) { var a = links[k]; if (!vis(a)) continue; var at = (a.textContent || '').trim().replace(/\\s+/g, ' '); if (!at || at.length < 2 || seen.has(at)) continue; seen.add(at); var r3 = a.getBoundingClientRect(); if (!inView(r3)) continue; results.push({ el: a, type: 'link', _x: r3.x, _y: r3.y }); }
+  results.sort(function(a, b) { var dy = a._y - b._y; return Math.abs(dy) > 15 ? dy : a._x - b._x; });
+  var colors = { input: '#e8b931', button: '#34a853', link: '#4285f4' };
+  for (var n = 0; n < results.length; n++) {
+    var it = results[n], rect = it.el.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) continue;
     var b = document.createElement('div');
     b.className = 'tb-overlay-badge';
-    b.textContent = String(num);
+    b.textContent = String(n + 1);
     b.setAttribute('style',
       'position:fixed !important;z-index:999999 !important;' +
       'top:' + Math.max(0, rect.top - 6) + 'px !important;' +
       'left:' + Math.max(0, rect.left - 6) + 'px !important;' +
-      'background:' + color + ' !important;color:#fff !important;' +
+      'background:' + colors[it.type] + ' !important;color:#fff !important;' +
       'font-size:10px !important;font-weight:bold !important;font-family:monospace !important;' +
       'min-width:16px !important;height:16px !important;line-height:16px !important;' +
       'text-align:center !important;border-radius:8px !important;' +
@@ -93,29 +112,6 @@ const INJECT_OVERLAY_BADGES_JS = `(() => {
       'box-shadow:0 1px 3px rgba(0,0,0,0.5) !important;'
     );
     document.body.appendChild(b);
-  }
-  var inputs = document.querySelectorAll('input[type="text"], input[type="search"], input[type="email"], input[type="password"], input[type="url"], input[type="number"], input:not([type]), textarea');
-  for (var i = 0; i < inputs.length; i++) {
-    try { if (getComputedStyle(inputs[i]).display === 'none' || inputs[i].type === 'hidden' || inputs[i].offsetParent === null) continue; } catch(e) { continue; }
-    badge(inputs[i], idx++, '#e8b931');
-  }
-  var btns = document.querySelectorAll('button, input[type="submit"], [role="button"]');
-  for (var j = 0; j < btns.length; j++) {
-    try { if (getComputedStyle(btns[j]).display === 'none' || btns[j].offsetParent === null) continue; } catch(e) { continue; }
-    var t = (btns[j].textContent || '').trim();
-    if (!t || seen.has(t)) continue;
-    seen.add(t);
-    badge(btns[j], idx++, '#34a853');
-  }
-  var links = document.querySelectorAll('a[href]');
-  var lc = 0;
-  for (var k = 0; k < links.length && lc < 25; k++) {
-    try { if (getComputedStyle(links[k]).display === 'none' || links[k].offsetParent === null) continue; } catch(e) { continue; }
-    var at = (links[k].textContent || '').trim();
-    if (!at || at.length < 2 || seen.has(at)) continue;
-    seen.add(at);
-    badge(links[k], idx++, '#4285f4');
-    lc++;
   }
 })()`;
 
@@ -656,6 +652,7 @@ Examples:
             uptime: number;
             sessions: Array<{
               id: string;
+              name?: string;
               engine: string;
               lastUsedAt: string;
             }>;
@@ -679,7 +676,7 @@ Examples:
             );
             for (const s of status.sessions) {
               console.log(
-                `  ${s.id} [${s.engine}] last used ${timeAgo(new Date(s.lastUsedAt))}`,
+                `  ${s.id}${s.name ? ` (${s.name})` : ""} [${s.engine}] last used ${timeAgo(new Date(s.lastUsedAt))}`,
               );
             }
           }

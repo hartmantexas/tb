@@ -43,7 +43,7 @@
 
   <!-- Title -->
   <text x="200" y="82" font-family="-apple-system,BlinkMacSystemFont,sans-serif" font-size="52" font-weight="800" fill="white">tb</text>
-  <text x="265" y="82" font-family="-apple-system,BlinkMacSystemFont,sans-serif" font-size="52" font-weight="300" fill="#666">tiny browser</text>
+  <text x="265" y="82" font-family="-apple-system,BlinkMacSystemFont,sans-serif" font-size="48" font-weight="300" fill="#666">terminal browser</text>
 
   <!-- Subtitle -->
   <text x="200" y="115" font-family="-apple-system,BlinkMacSystemFont,sans-serif" font-size="18" fill="#888">Agent-first browser with site-aware scraping</text>
