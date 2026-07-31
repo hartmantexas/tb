@@ -454,6 +454,23 @@ export async function startDaemon(): Promise<void> {
             await session.stopScreencast();
             result = { ok: true };
             break;
+          case "drag":
+            await session.drag(
+              params.x1 as number, params.y1 as number,
+              params.x2 as number, params.y2 as number,
+              { steps: params.steps as number | undefined, durationMs: params.durationMs as number | undefined },
+            );
+            result = { ok: true };
+            break;
+          case "startRecording":
+            result = await session.startRecording(params as any);
+            break;
+          case "stopRecording":
+            result = await session.stopRecording();
+            break;
+          case "recordingStatus":
+            result = session.getRecordingStatus();
+            break;
           case "getLatestFrame": {
             const frame = session.getLatestFrame();
             result = frame ?? { base64: null, ts: 0 };

@@ -228,6 +228,39 @@ function output(data: unknown): void {
   }
 }
 
+/** Turn a stopped recording (frames + concat list) into a video file. */
+async function assembleRecording(
+  r: { dir: string; frameCount: number; durationSec: number; listPath: string | null },
+  out: string,
+): Promise<void> {
+  if (!r.listPath || r.frameCount < 2) {
+    die(`Too few frames recorded (${r.frameCount}) — nothing changed on screen?`);
+  }
+  const { spawnSync, execFileSync } = await import("child_process");
+  const ffmpeg =
+    process.env.FFMPEG ??
+    (spawnSync("ffmpeg", ["-version"], { stdio: "ignore" }).status === 0 ? "ffmpeg" : null);
+  if (!ffmpeg) {
+    output(
+      jsonMode
+        ? { frames: r.dir, list: r.listPath, note: "no ffmpeg found" }
+        : `No ffmpeg on PATH (or $FFMPEG). Frames kept — assemble with:\n  ffmpeg -f concat -safe 0 -i ${r.listPath} -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" -c:v libx264 -pix_fmt yuv420p -movflags +faststart ${out}`,
+    );
+    return;
+  }
+  execFileSync(ffmpeg, [
+    "-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", r.listPath,
+    "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2",
+    "-c:v", "libx264", "-preset", "fast", "-crf", "19", "-pix_fmt", "yuv420p",
+    "-movflags", "+faststart", out,
+  ]);
+  output(
+    jsonMode
+      ? { path: out, frames: r.frameCount, durationSec: r.durationSec }
+      : `Recorded ${out} (${r.frameCount} frames, ${r.durationSec.toFixed(1)}s)`,
+  );
+}
+
 function die(msg: string): never {
   if (jsonMode) {
     console.log(JSON.stringify({ error: msg }));
@@ -376,6 +409,10 @@ Commands:
   auth save <name>        Save auth state (cookies + localStorage)
   auth load <name>        Restore auth into session
   record <name>           Record actions to a script
+  rec <sec|start|stop|status> [out.mp4]  Video-record the session (any app;
+                          runs in the daemon, so every command between
+                          start and stop lands in the video)
+  drag <x1> <y1> <x2> <y2>  Smooth real-input drag (canvas editors, sliders)
   replay <name>           Replay a recorded script
   events                  Stream page events (console, nav, errors)
   dom-snapshot            Take a structural DOM fingerprint
@@ -975,6 +1012,54 @@ Examples:
               }
             }
           } catch { break; }
+        }
+        break;
+      }
+
+      case "drag": {
+        // tb drag x1 y1 x2 y2 [--ms 600] — smooth real-input drag.
+        await ensureDaemon();
+        const [x1, y1, x2, y2] = positional.map(Number);
+        if ([x1, y1, x2, y2].some((v) => !Number.isFinite(v))) {
+          die("Usage: tb drag <x1> <y1> <x2> <y2> [--ms 600]");
+        }
+        await sessionCmd("drag", { x1, y1, x2, y2, durationMs: flags.ms ? parseInt(flags.ms) : undefined });
+        output(jsonMode ? { ok: true } : `Dragged (${x1},${y1}) → (${x2},${y2})`);
+        break;
+      }
+
+      case "rec": {
+        // Video recording. Frames spool inside the daemon, so any tb
+        // commands (click, type, act, workflow, …) run while it records.
+        await ensureDaemon();
+        const sub = positional[0] ?? "status";
+        if (sub === "start") {
+          const r = (await sessionCmd("startRecording", {
+            quality: flags.quality ? parseInt(flags.quality) : undefined,
+          })) as { dir: string };
+          output(jsonMode ? r : `Recording… (frames → ${r.dir}). Stop with: tb rec stop out.mp4`);
+        } else if (sub === "stop") {
+          const r = (await sessionCmd("stopRecording", {})) as {
+            dir: string; frameCount: number; durationSec: number; listPath: string | null;
+          };
+          const out = positional[1];
+          if (!out) {
+            output(jsonMode ? r : `Stopped: ${r.frameCount} frames over ${r.durationSec.toFixed(1)}s in ${r.dir}`);
+          } else {
+            await assembleRecording(r, out);
+          }
+        } else if (sub === "status") {
+          output(await sessionCmd("recordingStatus", {}));
+        } else if (/^\d+(\.\d+)?$/.test(sub)) {
+          // tb rec 8 out.mp4 — fixed-length convenience.
+          await sessionCmd("startRecording", {});
+          await new Promise((r) => setTimeout(r, parseFloat(sub) * 1000));
+          const r = (await sessionCmd("stopRecording", {})) as {
+            dir: string; frameCount: number; durationSec: number; listPath: string | null;
+          };
+          await assembleRecording(r, positional[1] ?? `/tmp/tb-rec-${Date.now()}.mp4`);
+        } else {
+          die("Usage: tb rec start | tb rec stop [out.mp4] | tb rec <seconds> [out.mp4] | tb rec status");
         }
         break;
       }
@@ -2191,6 +2276,9 @@ Examples:
         await ensureDaemon();
         const wf = JSON.parse((await import("fs")).readFileSync(wfFile, "utf-8"));
         console.log(`Running workflow: ${wf.name || wfFile} (${wf.steps?.length || 0} steps)`);
+        // --record demo.mp4: video the whole run (start before step 1,
+        // assemble after the last step) — a workflow IS a demo script.
+        if (flags.record) await sessionCmd("startRecording", {});
         for (let i = 0; i < (wf.steps || []).length; i++) {
           const step = wf.steps[i];
           const [action, ...rest] = Object.entries(step)[0] as [string, any];
@@ -2216,6 +2304,12 @@ Examples:
           }
           else if (action === "sleep") await new Promise(r => setTimeout(r, (rest[0] as number) || 1000));
           await new Promise(r => setTimeout(r, 300)); // brief pause between steps
+        }
+        if (flags.record) {
+          const r = (await sessionCmd("stopRecording", {})) as {
+            dir: string; frameCount: number; durationSec: number; listPath: string | null;
+          };
+          await assembleRecording(r, flags.record);
         }
         console.log("Workflow complete.");
         break;

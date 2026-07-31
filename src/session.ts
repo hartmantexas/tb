@@ -1,6 +1,7 @@
 import { CDPClient } from "./cdp.js";
 import type { EngineType } from "./engines/types.js";
-import { existsSync, readFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
 import { join } from "path";
 import { renderWithTakumi } from "./takumi-renderer.js";
 import { resolveBlitzPath } from "./blitz-path.js";
@@ -256,6 +257,13 @@ export class Session {
   private screencastFrame: { base64: string; ts: number } | null = null;
   private screencastActive = false;
   private onScreencastFrame: ((base64: string) => void) | null = null;
+  /** Video recording: frames spooled to disk while any commands run. */
+  private recording: {
+    dir: string;
+    frames: { file: string; ts: number }[];
+    startedAt: number;
+    startedScreencast: boolean;
+  } | null = null;
 
   private viewport: { width: number; height: number };
 
@@ -736,6 +744,32 @@ export class Session {
     await this.cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 });
     await new Promise(r => setTimeout(r, 50));
     await this.cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1 });
+  }
+
+  /**
+   * Smooth press-move-release drag with eased interpolation — real OS-level
+   * input, so canvas editors, sliders, and drag-and-drop UIs all respond.
+   * Reads beautifully on a `rec` video (no teleporting cursor).
+   */
+  async drag(x1: number, y1: number, x2: number, y2: number, opts?: { steps?: number; durationMs?: number }): Promise<void> {
+    this.logDVR("drag", { x1, y1, x2, y2 });
+    const steps = Math.max(2, opts?.steps ?? 24);
+    const dur = Math.max(50, opts?.durationMs ?? 600);
+    await this.cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: x1, y: y1 });
+    await new Promise((r) => setTimeout(r, 60));
+    await this.cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", x: x1, y: y1, button: "left", clickCount: 1 });
+    for (let i = 1; i <= steps; i++) {
+      const t = i / steps;
+      const e = t * t * (3 - 2 * t); // smoothstep — accelerate then settle
+      await this.cdp.send("Input.dispatchMouseEvent", {
+        type: "mouseMoved",
+        x: x1 + (x2 - x1) * e,
+        y: y1 + (y2 - y1) * e,
+        button: "left",
+      });
+      await new Promise((r) => setTimeout(r, dur / steps));
+    }
+    await this.cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: x2, y: y2, button: "left", clickCount: 1 });
   }
 
   async typeText(text: string): Promise<void> {
@@ -1538,6 +1572,17 @@ export class Session {
       // Ack immediately to keep frames flowing
       this.cdp.send("Page.screencastFrameAck", { sessionId: params.sessionId }).catch(() => {});
       this.onScreencastFrame?.(params.data as string);
+      // Spool to the active recording (CDP metadata timestamp keeps frame
+      // pacing accurate even when the page renders at uneven rates).
+      const rec = this.recording;
+      if (rec) {
+        const meta = params.metadata as { timestamp?: number } | undefined;
+        const file = `f${String(rec.frames.length).padStart(6, "0")}.jpg`;
+        try {
+          writeFileSync(join(rec.dir, file), Buffer.from(params.data as string, "base64"));
+          rec.frames.push({ file, ts: meta?.timestamp ?? Date.now() / 1000 });
+        } catch {}
+      }
     });
 
     await this.cdp.send("Page.startScreencast", {
@@ -1559,6 +1604,76 @@ export class Session {
   /** Get the latest cached screencast frame (instant, no new capture) */
   getLatestFrame(): { base64: string; ts: number } | null {
     return this.screencastFrame;
+  }
+
+  // --- Video recording (spool screencast frames while any commands run) ---
+
+  /**
+   * Start recording this session to a frames directory. Rides the same
+   * screencast stream the live viewers use, so it works for ANY page and
+   * keeps recording across navigations, clicks, scrolls — everything the
+   * agent does between start and stop ends up in the video.
+   */
+  async startRecording(opts?: {
+    dir?: string;
+    quality?: number;
+    maxWidth?: number;
+    maxHeight?: number;
+  }): Promise<{ dir: string }> {
+    if (this.recording) return { dir: this.recording.dir };
+    const dir = opts?.dir ?? join(tmpdir(), `tb-rec-${Date.now()}`);
+    mkdirSync(dir, { recursive: true });
+    const startedScreencast = !this.screencastActive;
+    // Recording wants crisper frames than the live viewer default.
+    if (!this.screencastActive) {
+      await this.startScreencast({
+        quality: opts?.quality ?? 85,
+        maxWidth: opts?.maxWidth ?? this.viewport.width,
+        maxHeight: opts?.maxHeight ?? this.viewport.height,
+      });
+    }
+    this.recording = { dir, frames: [], startedAt: Date.now(), startedScreencast };
+    return { dir };
+  }
+
+  /**
+   * Stop recording. Writes an ffmpeg concat list (frame durations from the
+   * CDP timestamps) next to the frames and returns everything the CLI needs
+   * to assemble a video — assembly stays out of the daemon on purpose.
+   */
+  async stopRecording(): Promise<{
+    dir: string;
+    frameCount: number;
+    durationSec: number;
+    listPath: string | null;
+  }> {
+    const rec = this.recording;
+    if (!rec) throw new Error("No recording in progress");
+    this.recording = null;
+    if (rec.startedScreencast) await this.stopScreencast();
+    const n = rec.frames.length;
+    const durationSec = n > 1 ? rec.frames[n - 1].ts - rec.frames[0].ts : 0;
+    let listPath: string | null = null;
+    if (n > 1) {
+      const lines = rec.frames.map((f, i) => {
+        const dur = (i + 1 < n ? rec.frames[i + 1].ts : f.ts + 1 / 30) - f.ts;
+        return `file '${f.file}'\nduration ${Math.max(0.005, dur).toFixed(4)}`;
+      });
+      lines.push(`file '${rec.frames[n - 1].file}'`);
+      listPath = join(rec.dir, "list.txt");
+      writeFileSync(listPath, lines.join("\n") + "\n");
+    }
+    return { dir: rec.dir, frameCount: n, durationSec, listPath };
+  }
+
+  getRecordingStatus(): { active: boolean; dir?: string; frameCount?: number; elapsedSec?: number } {
+    if (!this.recording) return { active: false };
+    return {
+      active: true,
+      dir: this.recording.dir,
+      frameCount: this.recording.frames.length,
+      elapsedSec: (Date.now() - this.recording.startedAt) / 1000,
+    };
   }
 
   /** Subscribe to screencast frame updates */
