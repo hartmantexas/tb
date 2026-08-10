@@ -7,6 +7,21 @@ import { renderWithTakumi } from "./takumi-renderer.js";
 import { resolveBlitzPath } from "./blitz-path.js";
 
 /**
+ * Chrome major version we present to pages. Keep this in step with the
+ * Chrome-for-Testing builds `tb install` pulls: the UA string, the
+ * Sec-CH-UA client hints, and navigator.userAgentData all derive from it,
+ * and a mismatch between them is a bot signal on its own.
+ */
+const CHROME_VERSION = "151";
+const CHROME_UA =
+  `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ` +
+  `(KHTML, like Gecko) Chrome/${CHROME_VERSION}.0.0.0 Safari/537.36`;
+
+/** Markers that mean "this is a challenge/punish wall, not the page you asked for". */
+const BLOCK_URL_RE = /punish|_____tmd_____|x5sec|captcha/i;
+const BLOCK_TEXT_RE = /slide to verify|unusual traffic|verify to continue/i;
+
+/**
  * Render HTML to PNG using Blitz (Rust-based renderer with Firefox's Stylo CSS engine).
  * Falls back to Takumi if Blitz binary isn't available.
  */
@@ -345,10 +360,32 @@ export class Session {
         this.cdp.send("DOM.enable"),
       ]);
 
-      // Override user-agent to remove "HeadlessChrome" — the #1 detection signal
+      // Override user-agent to remove "HeadlessChrome" — the #1 detection signal.
+      // userAgentMetadata is mandatory: without it navigator.userAgentData.brands
+      // is [] and .platform is "", which no real browser ever reports. An empty
+      // userAgentData next to a populated UA string is itself a bot signal.
       await this.cdp.send("Network.setUserAgentOverride", {
-        userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
+        userAgent: CHROME_UA,
         platform: "MacIntel",
+        acceptLanguage: "en-US,en;q=0.9",
+        userAgentMetadata: {
+          brands: [
+            { brand: "Not)A;Brand", version: "99" },
+            { brand: "Google Chrome", version: CHROME_VERSION },
+            { brand: "Chromium", version: CHROME_VERSION },
+          ],
+          fullVersionList: [
+            { brand: "Not)A;Brand", version: "99.0.0.0" },
+            { brand: "Google Chrome", version: `${CHROME_VERSION}.0.0.0` },
+            { brand: "Chromium", version: `${CHROME_VERSION}.0.0.0` },
+          ],
+          fullVersion: `${CHROME_VERSION}.0.0.0`,
+          platform: "macOS",
+          platformVersion: "15.0.0",
+          architecture: "arm64",
+          model: "",
+          mobile: false,
+        },
       }).catch(() => {});
 
       // Stealth: inject anti-detection patches before any page JS runs
@@ -368,45 +405,53 @@ export class Session {
               ? Promise.resolve({ state: Notification.permission })
               : origQuery(params);
 
-          // Fix plugins (headless has 0, real browsers have some)
-          Object.defineProperty(navigator, 'plugins', {
-            get: () => {
-              const arr = [
-                { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
-                { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' },
-                { name: 'Native Client', filename: 'internal-nacl-plugin', description: '' },
-              ];
-              arr.item = (i) => arr[i];
-              arr.namedItem = (n) => arr.find(p => p.name === n);
-              arr.refresh = () => {};
-              return arr;
-            },
+          // Fix plugins (headless has 0, real browsers have some).
+          // Must present as a PluginArray — a bare Array shows up as
+          // "[object Array]" under Object.prototype.toString, which real
+          // browsers never do.
+          const pluginData = [
+            { name: 'PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+            { name: 'Chrome PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+            { name: 'Chromium PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+          ];
+          const fakePlugins = Object.create(PluginArray.prototype);
+          pluginData.forEach((p, i) => {
+            const plugin = Object.create(Plugin.prototype);
+            Object.defineProperties(plugin, {
+              name: { value: p.name, enumerable: true },
+              filename: { value: p.filename, enumerable: true },
+              description: { value: p.description, enumerable: true },
+              length: { value: 0, enumerable: true },
+            });
+            Object.defineProperty(fakePlugins, i, { value: plugin, enumerable: true });
+            Object.defineProperty(fakePlugins, p.name, { value: plugin });
           });
+          Object.defineProperty(fakePlugins, 'length', { value: pluginData.length });
+          Object.defineProperty(navigator, 'plugins', { get: () => fakePlugins });
 
           // Fix languages
           Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
 
-          // Fix WebGL vendor/renderer (headless returns Google SwiftShader)
-          const getParam = WebGLRenderingContext.prototype.getParameter;
-          WebGLRenderingContext.prototype.getParameter = function(param) {
-            if (param === 37445) return 'Intel Inc.';
-            if (param === 37446) return 'Intel Iris OpenGL Engine';
-            return getParam.call(this, param);
+          // Fix WebGL vendor/renderer (headless returns Google SwiftShader).
+          // Patch BOTH contexts — patching only WebGL1 leaves WebGL2 reporting
+          // SwiftShader (or null), which contradicts the WebGL1 answer.
+          const patchGL = (proto) => {
+            if (!proto) return;
+            const getParam = proto.getParameter;
+            proto.getParameter = function(param) {
+              if (param === 37445) return 'Intel Inc.';
+              if (param === 37446) return 'Intel Iris OpenGL Engine';
+              return getParam.call(this, param);
+            };
           };
+          patchGL(typeof WebGLRenderingContext !== 'undefined' ? WebGLRenderingContext.prototype : null);
+          patchGL(typeof WebGL2RenderingContext !== 'undefined' ? WebGL2RenderingContext.prototype : null);
 
-          // Fix iframe contentWindow access
-          const origAttachShadow = Element.prototype.attachShadow;
-          Element.prototype.attachShadow = function() {
-            return origAttachShadow.call(this, ...arguments);
-          };
-
-          // Fix toString on patched functions
-          const origToString = Function.prototype.toString;
-          const customFns = new Set();
-          Function.prototype.toString = function() {
-            if (customFns.has(this)) return 'function () { [native code] }';
-            return origToString.call(this);
-          };
+          // NOTE: deliberately NOT patching Element.prototype.attachShadow or
+          // Function.prototype.toString. Previous versions wrapped both — the
+          // attachShadow wrapper was a pure no-op and the toString guard never
+          // populated its set, so each only replaced a native function with a
+          // non-native one. That *creates* a fingerprint instead of hiding one.
         `,
       });
     }
@@ -582,46 +627,100 @@ export class Session {
     return bestRef;
   }
 
-  /** Wait for content to settle — polls for stable text length */
-  async waitForSettled(timeout = 15000): Promise<void> {
+  /**
+   * Wait for content to settle — polls for stable text length.
+   * Returns whether it actually settled, so callers can tell a hydrated page
+   * from one that timed out still changing.
+   */
+  async waitForSettled(timeout = 15000): Promise<{ settled: boolean; textLen: number }> {
     const start = Date.now();
     let lastLen = 0;
     let stableCount = 0;
     while (Date.now() - start < timeout) {
       const result = (await this.cdp.send("Runtime.evaluate", {
-        expression: "document.body.innerText.length",
+        expression: "document.body ? document.body.innerText.length : 0",
         returnByValue: true,
       })) as { result: { value: number } };
       const len = result.result.value;
       if (len === lastLen) {
         stableCount++;
-        if (stableCount >= 3) return; // 3 stable checks = settled
+        if (stableCount >= 3) return { settled: true, textLen: len }; // 3 stable checks = settled
       } else {
         stableCount = 0;
         lastLen = len;
       }
       await new Promise(r => setTimeout(r, 500));
     }
+    return { settled: false, textLen: lastLen };
+  }
+
+  /**
+   * Is this page a bot-challenge wall rather than the content we asked for?
+   *
+   * Needed because `goto` resolving successfully tells you nothing — an
+   * x5sec/punish interstitial is served as a normal 200 page. Callers doing
+   * bulk work should check this and back off rather than hammer the challenge.
+   */
+  async isBlocked(): Promise<{ blocked: boolean; reason: string | null }> {
+    const expression = `(() => {
+      const href = location.href;
+      if (${BLOCK_URL_RE.toString()}.test(href)) return { blocked: true, reason: 'url:' + href.slice(0, 120) };
+      const body = document.body ? document.body.innerText.slice(0, 3000) : '';
+      if (${BLOCK_TEXT_RE.toString()}.test(body)) return { blocked: true, reason: 'challenge-text' };
+      return { blocked: false, reason: null };
+    })()`;
+    try {
+      const result = (await this.cdp.send("Runtime.evaluate", {
+        expression,
+        returnByValue: true,
+      })) as { result: { value: { blocked: boolean; reason: string | null } } };
+      return result.result.value ?? { blocked: false, reason: null };
+    } catch {
+      return { blocked: false, reason: null };
+    }
   }
 
   // --- Navigation ---
 
-  async goto(url: string): Promise<{ status: number; url: string }> {
+  async goto(url: string): Promise<{ status: number; url: string; blocked: boolean }> {
     this.logDVR("goto", { url });
-    const loadPromise = this.cdp.once("Page.loadEventFired");
-    const result = (await this.cdp.send("Page.navigate", { url })) as {
-      frameId?: string;
-      errorText?: string;
+
+    // Capture the real main-frame status. This used to be hardcoded to 200,
+    // which made 403s and bot-challenge interstitials look like clean loads.
+    let mainStatus = 0;
+    let navFrameId: string | undefined;
+    const onResponse: (params: Record<string, unknown>) => void = (params) => {
+      const type = params.type as string | undefined;
+      const frameId = params.frameId as string | undefined;
+      const response = params.response as { status?: number } | undefined;
+      if (type !== "Document" || !response?.status) return;
+      // Before Page.navigate resolves we don't know the frame id yet; take the
+      // first Document response and let a later matching one correct it.
+      if (!navFrameId || frameId === navFrameId) mainStatus = response.status;
     };
-    if (result.errorText) {
-      throw new Error(`Navigation failed: ${result.errorText}`);
+    this.cdp.on("Network.responseReceived", onResponse);
+
+    try {
+      const loadPromise = this.cdp.once("Page.loadEventFired");
+      const result = (await this.cdp.send("Page.navigate", { url })) as {
+        frameId?: string;
+        errorText?: string;
+      };
+      if (result.errorText) {
+        throw new Error(`Navigation failed: ${result.errorText}`);
+      }
+      navFrameId = result.frameId;
+      await Promise.race([
+        loadPromise,
+        new Promise((r) => setTimeout(r, 15000)),
+      ]);
+    } finally {
+      this.cdp.off("Network.responseReceived", onResponse);
     }
-    await Promise.race([
-      loadPromise,
-      new Promise((r) => setTimeout(r, 15000)),
-    ]);
+
     const currentUrl = await this.url();
-    return { status: 200, url: currentUrl };
+    const { blocked } = await this.isBlocked();
+    return { status: mainStatus, url: currentUrl, blocked };
   }
 
   async reload(): Promise<void> {

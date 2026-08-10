@@ -350,6 +350,11 @@ export class ChromiumEngine implements Engine {
       ...(options.insecure ? ["--ignore-certificate-errors"] : []),
       "--no-sandbox",
       "--disable-dev-shm-usage",
+      // Drops the AutomationControlled blink feature — without it the renderer
+      // advertises itself as automated regardless of what we patch in JS.
+      "--disable-blink-features=AutomationControlled",
+      // Pin language so Accept-Language matches the en-US we claim over CDP.
+      "--lang=en-US",
       "--disable-extensions",
       "--disable-background-networking",
       "--disable-default-apps",

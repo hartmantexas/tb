@@ -1,6 +1,7 @@
-import { existsSync, unlinkSync } from "fs";
+import { existsSync, unlinkSync, openSync, writeSync, closeSync, readFileSync, statSync } from "fs";
 import { spawn } from "child_process";
 import { homedir } from "os";
+import { dirname, join } from "path";
 import { CDPClient } from "./cdp.js";
 import { Session } from "./session.js";
 import { resolveEngine, type EngineProcess, type EngineType } from "./engines/index.js";
@@ -291,6 +292,12 @@ export async function startDaemon(): Promise<void> {
             break;
           case "url":
             result = await session.url();
+            break;
+          case "isBlocked":
+            result = await session.isBlocked();
+            break;
+          case "waitForSettled":
+            result = await session.waitForSettled(params.timeout as number | undefined);
             break;
           case "click":
             await session.click(params.selector as string);
@@ -594,6 +601,57 @@ export async function daemonFetch(
   return data;
 }
 
+const DAEMON_LOCK = join(dirname(DAEMON_SOCK), "daemon.lock");
+/** A spawn that hasn't produced a live socket within this long is presumed dead. */
+const LOCK_STALE_MS = 15000;
+
+/** Poll /status until the daemon answers, or give up after `timeout`. */
+async function waitForDaemonReady(timeout: number): Promise<boolean> {
+  const start = Date.now();
+  while (Date.now() - start < timeout) {
+    try {
+      await daemonFetch("/status");
+      return true;
+    } catch {}
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  return false;
+}
+
+/**
+ * Take the spawn lock, atomically. Returns true if we own it.
+ *
+ * `wx` fails if the file exists, and that check-and-create is a single
+ * syscall — which is the whole point. Without it two concurrent `tb`
+ * invocations both see "no daemon" and both spawn one, and the loser's
+ * sessions live in an orphaned process ("Session not found" at random).
+ */
+function acquireSpawnLock(): boolean {
+  try {
+    const fd = openSync(DAEMON_LOCK, "wx");
+    writeSync(fd, String(process.pid));
+    closeSync(fd);
+    return true;
+  } catch {
+    // Someone holds it. Reap it if the holder died or stalled.
+    try {
+      const holder = parseInt(readFileSync(DAEMON_LOCK, "utf8").trim(), 10);
+      const age = Date.now() - statSync(DAEMON_LOCK).mtimeMs;
+      if ((holder && !isProcessRunning(holder)) || age > LOCK_STALE_MS) {
+        unlinkSync(DAEMON_LOCK);
+        return acquireSpawnLock();
+      }
+    } catch {}
+    return false;
+  }
+}
+
+function releaseSpawnLock(): void {
+  try {
+    unlinkSync(DAEMON_LOCK);
+  } catch {}
+}
+
 export async function ensureDaemon(): Promise<void> {
   // Check if already running
   const pid = getDaemonPid();
@@ -609,32 +667,42 @@ export async function ensureDaemon(): Promise<void> {
 
   ensureTBDir();
 
-  // Clean up stale socket
-  if (existsSync(DAEMON_SOCK)) {
-    try {
-      unlinkSync(DAEMON_SOCK);
-    } catch {}
+  if (!acquireSpawnLock()) {
+    // Another `tb` is starting the daemon right now — wait for it rather than
+    // racing a second one into existence.
+    if (await waitForDaemonReady(15000)) return;
+    throw new Error("Failed to start daemon (another start is in progress)");
   }
 
-  // Start daemon as background process
-  const daemonScript = new URL("./daemon.ts", import.meta.url).pathname;
-  const proc = spawn("bun", ["run", daemonScript, "--daemon"], {
-    detached: true,
-    stdio: "ignore",
-    cwd: homedir(),
-  });
-  proc.unref();
-
-  // Wait for daemon to be ready
-  const start = Date.now();
-  while (Date.now() - start < 10000) {
+  try {
+    // Re-check under the lock: the holder we queued behind may have just
+    // finished, in which case there is nothing to do.
     try {
       await daemonFetch("/status");
       return;
     } catch {}
-    await new Promise((r) => setTimeout(r, 200));
+
+    // Clean up stale socket
+    if (existsSync(DAEMON_SOCK)) {
+      try {
+        unlinkSync(DAEMON_SOCK);
+      } catch {}
+    }
+
+    // Start daemon as background process
+    const daemonScript = new URL("./daemon.ts", import.meta.url).pathname;
+    const proc = spawn("bun", ["run", daemonScript, "--daemon"], {
+      detached: true,
+      stdio: "ignore",
+      cwd: homedir(),
+    });
+    proc.unref();
+
+    if (await waitForDaemonReady(10000)) return;
+    throw new Error("Failed to start daemon");
+  } finally {
+    releaseSpawnLock();
   }
-  throw new Error("Failed to start daemon");
 }
 
 export async function stopDaemon(): Promise<void> {

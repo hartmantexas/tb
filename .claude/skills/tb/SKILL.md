@@ -104,6 +104,46 @@ Numbers are stable within a page load. After navigation, run `tb elements` again
 
 Hidden elements (`display:none`, `offsetParent === null`) are skipped.
 
+## Scraping — pick the right tool
+
+| Situation | Command |
+|---|---|
+| Many pages → structured data | `tb harvest <urls.txt> --recipe r.js --out data.jsonl` |
+| Page empty / won't load / bot-blocked | add `--visible` |
+| Loaded but content empty (client-rendered) | `tb wait --settled` |
+| Need image URL / href / attribute | `tb extract '{"img":"img@src"}'` |
+| Suspect a captcha wall | `tb blocked` |
+| One page, quick pull | `tb eval '<IIFE>' --json` |
+
+**`--visible` is the anti-bot escape hatch.** Sites like AliExpress fingerprint
+headless Chrome and serve an empty shell — no error, just a page with no content. If
+a page looks mysteriously blank, try `--visible` before debugging your selectors.
+
+**Don't trust a clean `goto`.** It returns `{status, url, blocked}` — check them. A
+challenge page is served as a normal 200.
+
+**Never retry into a challenge.** It turns a temporary rate-limit into a hard block.
+`tb harvest` already handles this: it waits ~40s for the challenge to clear, then
+halts with a resumable checkpoint.
+
+### Bulk scrape
+
+```bash
+# headful session for a bot-protected site
+tb open https://site.com --visible -e c -n s --new
+sleep 5                                   # let it warm up before hitting deep pages
+
+tb --session s harvest urls.txt \
+   --recipe src/recipes/aliexpress.js \   # or --schema '{"title":"h1","img":"img@src"}'
+   --out data.jsonl --settle --jitter 3,7
+
+# halted? fix the cause and re-run — it skips everything already in data.jsonl
+```
+
+A recipe is plain JS whose last expression is the record (same as `tb eval`). Prefer
+`og:` meta tags — they're server-rendered and survive when the body is blocked. Match
+hashed CSS-module classes on a prefix: `[class*="price-default--current--"]`.
+
 ## Patterns
 
 ### Login Flow
