@@ -108,6 +108,37 @@ tb --session test annotate /tmp/annotated.png      # See what's clickable
 tb kill test
 ```
 
+## Scraping
+
+Bulk-scrape a list of URLs into JSONL — resumable, jittered, and it stops instead of
+hammering a captcha.
+
+```bash
+tb open https://site.com --visible -e c -n s --new     # headful: beats bot detection
+tb --session s harvest urls.txt \
+   --schema '{"title":"h1","price":".price","img":"img@src"}' \
+   --out data.jsonl --settle --jitter 3,7
+```
+
+Re-running skips anything already in `data.jsonl`, so a halt costs you nothing.
+For site-specific logic use `--recipe file.js` instead of `--schema` — a recipe is
+plain JS whose last expression is the record (see `src/recipes/aliexpress.js`).
+
+| Situation | Command |
+|---|---|
+| Many pages → structured data | `tb harvest <urls.txt> --out data.jsonl` |
+| Page empty / bot-blocked | add `--visible` |
+| Client-rendered, content not there yet | `tb wait --settled` |
+| Need an image URL or href | `tb extract '{"img":"img@src"}'` |
+| Is this a captcha wall? | `tb blocked` |
+
+**`--visible` matters.** Some sites (Alibaba/AliExpress among them) fingerprint
+headless Chrome and return a page shell with no content — no error, just a blank
+result. A headful window renders it normally.
+
+`tb open` returns the **real** HTTP status plus a `blocked` flag, so you can tell a
+404 or a challenge page from a genuine load.
+
 ## Why
 
 
@@ -239,7 +270,7 @@ Every command supports `--json` for structured output:
 
 ```bash
 tb --json open http://example.com
-# {"status":200,"url":"https://example.com/"}
+# {"status":200,"url":"https://example.com/","blocked":false}
 
 tb --json title
 # {"title":"Example Domain"}

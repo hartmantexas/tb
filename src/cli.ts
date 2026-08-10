@@ -148,7 +148,7 @@ for (let i = 0; i < rawArgs.length; i++) {
     ) {
       // Peek ahead: known boolean flags don't consume next arg
       const flagName = arg.slice(2);
-      const booleanFlags = ["json", "help", "version", "new", "full-page", "insecure", "secure", "keep"];
+      const booleanFlags = ["json", "help", "version", "new", "full-page", "insecure", "secure", "keep", "visible", "settled", "settle"];
       if (booleanFlags.includes(flagName)) {
         flags[flagName] = "true";
       } else {
@@ -312,6 +312,10 @@ async function getSession(needsScreenshot = false): Promise<string> {
       needsScreenshot,
       ...(sessionName ? { name: sessionName } : {}),
       ...(flags.group ? { group: flags.group } : {}),
+      // Headful window: some bot defenses (Alibaba/Baxia-class) fingerprint
+      // headless Chrome and silently serve an empty shell. --visible is the
+      // escape hatch.
+      ...(flags.visible === "true" ? { visible: true } : {}),
     },
   })) as { sessionId: string; engine: string; name?: string; sessions?: number; limit?: number };
 
@@ -418,7 +422,10 @@ Commands:
   dom-snapshot            Take a structural DOM fingerprint
   dom-diff                Diff DOM against previous snapshot
   diff <baseline.png>     Compare screenshot to baseline
-  extract <schema>        Extract structured data by CSS selectors
+  extract <schema>        Extract structured data by CSS selectors ('sel@attr' for img/href)
+  harvest <urls-file>     Bulk scrape a URL list -> JSONL (resumable, jittered)
+  blocked                 Is this page a bot-challenge wall?
+  wait --settled          Wait for a client-rendered page to stop changing
   auto-extract            Zero-config structured data extraction (repeating items)
   workflow <file.json>    Run a multi-step workflow
   intercept block <pat>   Block URLs matching pattern
@@ -446,6 +453,7 @@ Flags:
   --session <id>    Use session by ID or name
   --json            Output as JSON (for agents)
   --new             Create a new session
+  --visible         Headful window — use when a site blocks headless
   --full-page       Full page screenshot
   --open            Open screenshot in system viewer
   --format <fmt>    Screenshot format: png, jpeg
@@ -670,12 +678,91 @@ Examples:
 
       case "wait": {
         const selector = positional[0];
-        if (!selector) die("Usage: tb wait <selector>");
+        // `tb wait --settled` waits for the DOM to stop changing instead of for
+        // a selector — the right tool when a client-rendered page has loaded but
+        // hasn't hydrated its content yet.
+        if (!selector && (flags.settled === "true" || flags.settle === "true")) {
+          await ensureDaemon();
+          const timeout = flags.timeout ? parseInt(flags.timeout) : 15000;
+          const settleRes = (await sessionCmd("waitForSettled", { timeout })) as {
+            settled: boolean; textLen: number;
+          };
+          output(
+            jsonMode
+              ? settleRes
+              : settleRes.settled
+                ? `Settled (${settleRes.textLen} chars)`
+                : `Timed out after ${timeout}ms, still changing (${settleRes.textLen} chars)`,
+          );
+          break;
+        }
+        if (!selector) die("Usage: tb wait <selector>   |   tb wait --settled [--timeout ms]");
         await ensureDaemon();
         const timeout = flags.timeout ? parseInt(flags.timeout) : 10000;
         await sessionCmd("waitForSelector", { selector, timeout });
         output(
           jsonMode ? { ok: true, selector } : `Found ${selector}`,
+        );
+        break;
+      }
+
+      case "harvest": {
+        // Bulk: many URLs -> one JSONL of structured records. Resumable.
+        const urlsFile = positional[0];
+        if (!urlsFile) {
+          die("Usage: tb harvest <urls-file> [--recipe f.js | --schema '{...}'] [--out data.jsonl] [--visible] [--settle] [--jitter 2.5,6]");
+          break;
+        }
+        await ensureDaemon();
+        const { harvest } = await import("./harvest.js");
+        const jitterRaw = (flags.jitter || "2.5,6").split(",").map(Number);
+        const jitter: [number, number] = [
+          isNaN(jitterRaw[0]) ? 2.5 : jitterRaw[0],
+          isNaN(jitterRaw[1]) ? 6 : jitterRaw[1],
+        ];
+        try {
+          const res = await harvest(
+            {
+              urlsFile,
+              out: flags.out || "harvest.jsonl",
+              recipe: flags.recipe,
+              schema: flags.schema,
+              jitter,
+              settle: flags.settle === "true" || flags.settled === "true",
+              timeout: flags.timeout ? parseInt(flags.timeout) : 15000,
+            },
+            {
+              goto: (url) => sessionCmd("goto", { url }) as Promise<{ status: number; url: string; blocked: boolean }>,
+              isBlocked: () => sessionCmd("isBlocked") as Promise<{ blocked: boolean; reason: string | null }>,
+              waitForSettled: (timeout) => sessionCmd("waitForSettled", { timeout }) as Promise<{ settled: boolean; textLen: number }>,
+              evaluate: (expression) => sessionCmd("evaluate", { expression }),
+              log: (msg) => { if (!jsonMode) console.error(msg); },
+            },
+          );
+          output(
+            jsonMode
+              ? res
+              : res.halted
+                ? `\nHALTED: ${res.haltReason}\n${res.scraped} scraped this run -> ${flags.out || "harvest.jsonl"}`
+                : `\nDone: ${res.scraped} scraped, ${res.skipped} skipped (already done) -> ${flags.out || "harvest.jsonl"}`,
+          );
+        } catch (e) {
+          die((e as Error).message);
+        }
+        break;
+      }
+
+      case "blocked": {
+        // Is this page a bot-challenge wall? goto returning cleanly proves
+        // nothing — challenges are served as ordinary 200 pages.
+        await ensureDaemon();
+        const b = (await sessionCmd("isBlocked")) as { blocked: boolean; reason: string | null };
+        output(
+          jsonMode
+            ? b
+            : b.blocked
+              ? `BLOCKED — ${b.reason}`
+              : "Not blocked",
         );
         break;
       }
@@ -1739,7 +1826,7 @@ Examples:
       case "extract": {
         // Structured data extraction
         const schema = positional[0] || flags.schema;
-        if (!schema) die("Usage: tb extract '{\"field\": \"selector\"}' or tb extract --schema file.json");
+        if (!schema) die("Usage: tb extract '{\"field\": \"selector\"}' or 'sel@attr' for attributes, or tb extract --schema file.json");
         await ensureDaemon();
         let schemaObj: Record<string, string>;
         try {
@@ -1748,13 +1835,28 @@ Examples:
         const extractExpr = `(() => {
           const schema = ${JSON.stringify(schemaObj)};
           const result = {};
-          for (const [key, selector] of Object.entries(schema)) {
-            if (typeof selector === 'string') {
-              const els = document.querySelectorAll(selector);
-              if (els.length > 1) result[key] = Array.from(els).map(e => e.textContent.trim());
-              else if (els.length === 1) result[key] = els[0].textContent.trim();
-              else result[key] = null;
-            }
+          // "sel@attr" pulls an attribute (img@src, a@href); bare "sel" is text.
+          // Attributes are read via the live property first so that src/href
+          // come back absolute, matching what the browser actually resolved.
+          const read = (el, attr) => {
+            if (!attr) return el.textContent.trim();
+            if (attr === 'src' && el.src != null) return el.src;
+            if (attr === 'href' && el.href != null) return el.href;
+            if (attr === 'text' || attr === 'textContent') return el.textContent.trim();
+            if (attr === 'html' || attr === 'innerHTML') return el.innerHTML;
+            return el.getAttribute(attr);
+          };
+          for (const [key, raw] of Object.entries(schema)) {
+            if (typeof raw !== 'string') continue;
+            const at = raw.lastIndexOf('@');
+            const selector = at > 0 ? raw.slice(0, at) : raw;
+            const attr = at > 0 ? raw.slice(at + 1) : null;
+            let els;
+            try { els = document.querySelectorAll(selector); }
+            catch { result[key] = null; continue; }
+            if (els.length > 1) result[key] = Array.from(els).map(e => read(e, attr));
+            else if (els.length === 1) result[key] = read(els[0], attr);
+            else result[key] = null;
           }
           return result;
         })()`;
