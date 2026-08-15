@@ -28,6 +28,10 @@ tb screenshot /tmp/page.png       # Take screenshot
 
 **For screenshots, always set `-w fhd`** (1920x1080) before `open` — it gives crisp, well-proportioned captures. Use `-w mobile` etc. only when you specifically want to test that device size.
 
+**If the page needs a login,** don't fight it — drive the user's own browser instead:
+`tb tabs` to see what they have open, `tb attach <n>` to take one over. Setup is
+[one manual step](#logged-in-sites--drive-the-users-own-chrome) they run once.
+
 ## Core Commands
 
 | Command | What it does |
@@ -49,6 +53,13 @@ tb screenshot /tmp/page.png       # Take screenshot
 | `tb ps` | List active sessions (shows names) |
 | `tb kill <id-or-name>` | Kill a session |
 | `tb stop` | Stop daemon and all engines |
+| `tb extension install` | Connect tb to the user's own Chrome (one time, no restart) |
+| `tb bridges` | Which Chrome profiles are connected |
+| `tb use chrome` / `tb use tb` | Route commands through their browser, or back to tb's |
+| `tb tabs` | List tabs they already have open, numbered |
+| `tb attach <n\|title\|url>` | Bind a session to an existing tab |
+| `tb <cmd> --tab <n\|title\|url>` | One-off against an existing tab |
+| `tb <cmd> --bridge <profile>` | Pick a profile when several are connected |
 
 ## Session Lifecycle — close what you open
 
@@ -66,6 +77,10 @@ Every `tb open --new` spawns a session that stays alive until killed. They are
   `open` is refused — don't loop trying; close some first. For wide fan-out
   (distributed research), open a batch, finish it, **close it**, then continue —
   don't open 40 at once.
+- **Bridge sessions are the user's browser, so the rules differ.** `tb kill` on a tab
+  *they* opened only detaches — the tab stays. It closes only tabs tb created. `tb stop`
+  never touches their browser. Still `tb kill` when done: an attached tab keeps a
+  debugging banner until you let go of it.
 
 ## The Number System
 
@@ -104,7 +119,93 @@ Numbers are stable within a page load. After navigation, run `tb elements` again
 
 Hidden elements (`display:none`, `offsetParent === null`) are skipped.
 
+## Scraping — pick the right tool
+
+| Situation | Command |
+|---|---|
+| Many pages → structured data | `tb harvest <urls.txt> --recipe r.js --out data.jsonl` |
+| Site needs a logged-in account | `tb use chrome` (see below) |
+| Page empty / won't load / bot-blocked | add `--visible` |
+| Loaded but content empty (client-rendered) | `tb wait --settled` |
+| Need image URL / href / attribute | `tb extract '{"img":"img@src"}'` |
+| Suspect a captcha wall | `tb blocked` |
+| One page, quick pull | `tb eval '<IIFE>' --json` |
+
+**`--visible` is the anti-bot escape hatch.** Sites like AliExpress fingerprint
+headless Chrome and serve an empty shell — no error, just a page with no content. If
+a page looks mysteriously blank, try `--visible` before debugging your selectors.
+
+**Don't trust a clean `goto`.** It returns `{status, url, blocked}` — check them. A
+challenge page is served as a normal 200.
+
+## Logged-in sites — drive the user's own Chrome
+
+A throwaway browser is logged into nothing. The extension bridge relays CDP into the
+Chrome the user is already running, so their cookies, sessions, and extensions all apply.
+
+```bash
+tb extension install      # one time, no Chrome restart (user loads it by hand)
+tb use chrome             # route everything through their browser
+tb tabs                   # tabs they already have open
+tb attach 2 -n shop       # drive an existing tab
+tb --session shop extract '{"price":".price"}'
+tb use tb                 # back to tb's own browser
+```
+
+The extension is loaded per Chrome profile — that *is* the profile picker. Several can
+be connected; choose with `--bridge <name>`.
+
+**tb never closes a tab it didn't open.** `tb kill` detaches from a tab the user opened
+and only closes ones tb created. `tb stop` never touches their browser. Don't write
+workflows that assume otherwise.
+
+**Ask before scraping bulk through a logged-in profile.** It ties the activity to a real
+account, so a throttle can hit the account and not just the IP.
+
+**Never retry into a challenge.** It turns a temporary rate-limit into a hard block.
+`tb harvest` already handles this: it waits ~40s for the challenge to clear, then
+halts with a resumable checkpoint.
+
+### Bulk scrape
+
+```bash
+# headful session for a bot-protected site
+tb open https://site.com --visible -e c -n s --new
+sleep 5                                   # let it warm up before hitting deep pages
+
+tb --session s harvest urls.txt \
+   --recipe src/recipes/aliexpress.js \   # or --schema '{"title":"h1","img":"img@src"}'
+   --out data.jsonl --settle --jitter 3,7
+
+# halted? fix the cause and re-run — it skips everything already in data.jsonl
+```
+
+A recipe is plain JS whose last expression is the record (same as `tb eval`). Prefer
+`og:` meta tags — they're server-rendered and survive when the body is blocked. Match
+hashed CSS-module classes on a prefix: `[class*="price-default--current--"]`.
+
 ## Patterns
+
+### Scrape a site the user is logged into
+```bash
+# Prefer this over automating a login: no credentials, no 2FA, no captcha.
+tb bridges                                  # is a profile connected?
+tb tabs                                     # what do they already have open?
+
+# Take over a tab they're already on...
+tb attach aliexpress -n ali
+tb --session ali extract '{"title":"h1","price":"[class*=price-default--current--]"}'
+
+# ...or open new tabs in their window, still logged in
+tb open https://www.aliexpress.com/item/123.html -n item --new
+tb --session item extract '{"price":"[class*=price-default--current--]"}'
+
+tb kill ali                                 # detaches; their tab stays open
+tb kill item                                # tb opened this one, so it closes
+```
+
+Ask before bulk-harvesting through their account — it ties the traffic to a real
+login, so a throttle can land on the account and not just the IP.
 
 ### Login Flow
 ```bash
@@ -209,7 +310,8 @@ tb shots http://localhost:3000 /tmp/shots --viewports fhd,ipad,mobile
 |------|--------|------------|
 | `-e c` | Chromium | Real sites, pixel screenshots, bot-blocked pages, visual QA |
 | `-e lp` | Lightpanda | Scraping, text extraction, fast DOM ops, low memory |
-| (default) | auto | Picks Lightpanda |
+| `-e ext` | The user's own Chrome | Logged-in sites, tabs they already have open |
+| (default) | auto | Picks Lightpanda (or the bridge, after `tb use chrome`) |
 
 **Rendering paths:**
 - **Chromium (`-e c`)** — the real browser paint. Pixel-perfect, retina, full device emulation. Use for anything where exactness matters.
@@ -231,6 +333,12 @@ tb --json tap 3
 
 tb --json screenshot /tmp/shot.png
 # {"path":"/tmp/shot.png","size":142857}
+
+tb --json tabs
+# {"bridge":"you@gmail.com","tabs":[{"tabId":1001,"title":"AliExpress","url":"...","active":true}]}
+
+tb --json ps
+# sessions include "engine":"extension", "tabId", and "ownedTab" (false = the user's tab)
 ```
 
 ## Troubleshooting
@@ -244,6 +352,16 @@ tb --json screenshot /tmp/shot.png
 **TMPDIR errors** — if your shell has `TMPDIR` pointing to a disconnected drive, tb handles it (falls back to `/tmp`).
 
 **Elements missing from `tb elements`** — only visible, non-hidden elements with text are listed. Interactive divs with `onClick` but no `role="button"` may be missed. Use `tb eval` to find and click them directly.
+
+**"No tb extension is connected"** — the bridge isn't loaded, or Chrome is closed. Have the user run `tb extension install`. It's a manual load (Chrome blocks programmatic unpacked installs), so you can't do it for them.
+
+**"Could not attach to tab N"** — Chrome allows one debugger per tab. Something else holds it: DevTools is open on that tab, or another automation tool. Close DevTools and retry, or pick a different tab.
+
+**A tab isn't in `tb tabs`** — `chrome://` pages, the Web Store, and extension pages are filtered out because `chrome.debugger` can't attach to them at all.
+
+**"Chrome is no longer connected to tb"** — the user quit Chrome or removed the extension mid-session. Sessions bound to its tabs are dead; `tb kill` them. The extension reconnects on its own when Chrome comes back, but old sessions don't come back with it.
+
+**Bridge commands fail right after Chrome restarts** — the extension's service worker reconnects on a backoff. Give it a couple of seconds and check `tb bridges`.
 
 ## Smart Reading & Scraping
 

@@ -27,6 +27,14 @@ export async function resolveEngine(
   preferred: EngineType = "auto",
   _needsScreenshot = false,
 ): Promise<Engine> {
+  // The extension bridge has no process to launch — the daemon routes it away
+  // long before here. Reaching this point means the bridge wasn't available.
+  if (preferred === "extension") {
+    throw new Error(
+      "No tb extension is connected. Run: tb extension install",
+    );
+  }
+
   if (preferred === "lightpanda" || preferred === "chromium") {
     const engine = engines[preferred];
     const info = await engine.detect();
@@ -40,7 +48,12 @@ export async function resolveEngine(
 
   // Auto mode: use config's defaultEngine, fall back to the other if unavailable
   const config = loadConfig();
-  const defaultEngine = config.defaultEngine === "auto" ? "chromium" : config.defaultEngine;
+  // "extension" as a default means "prefer the bridge"; if we got here the
+  // bridge is gone, so fall back to a browser tb can actually launch.
+  const defaultEngine =
+    config.defaultEngine === "auto" || config.defaultEngine === "extension"
+      ? "chromium"
+      : config.defaultEngine;
   const fallback = defaultEngine === "chromium" ? "lightpanda" : "chromium";
 
   const defaultInfo = await engines[defaultEngine].detect();

@@ -1,6 +1,7 @@
-import { existsSync, unlinkSync } from "fs";
+import { existsSync, unlinkSync, openSync, writeSync, closeSync, readFileSync, statSync } from "fs";
 import { spawn } from "child_process";
 import { homedir } from "os";
+import { dirname, join } from "path";
 import { CDPClient } from "./cdp.js";
 import { Session } from "./session.js";
 import { resolveEngine, type EngineProcess, type EngineType } from "./engines/index.js";
@@ -14,16 +15,31 @@ import {
   randomId,
 } from "./utils.js";
 import { loadConfig } from "./config.js";
+import {
+  startBridgeServer,
+  stopBridgeServer,
+  getBridge,
+  listBridges,
+  BridgeCDPClient,
+  type Bridge,
+} from "./bridge.js";
+import type { CDPLike } from "./cdp.js";
 
 interface ManagedSession {
   id: string;
   name?: string;
   group?: string;
   session: Session;
-  engineProcess: EngineProcess;
-  cdp: CDPClient;
+  /** Absent for bridge sessions — there is no process tb owns. */
+  engineProcess?: EngineProcess;
+  cdp: CDPLike;
   createdAt: Date;
   lastUsedAt: Date;
+  /** Set for bridge sessions: the Chrome tab this session drives. */
+  bridge?: Bridge;
+  tabId?: number;
+  /** True only if tb opened the tab, and may therefore close it. */
+  createdByTb?: boolean;
 }
 
 // --- Daemon server (runs as the daemon process) ---
@@ -63,9 +79,12 @@ export async function startDaemon(): Promise<void> {
     for (const s of sessions.values()) {
       s.cdp.close().catch(() => {});
     }
+    // Only kills browsers tb launched. Bridge sessions have no entry here at
+    // all, which is the point: `tb stop` must never take down the user's Chrome.
     for (const ep of engineProcesses.values()) {
       ep.kill();
     }
+    stopBridgeServer();
     removeDaemonPid();
     try {
       unlinkSync(DAEMON_SOCK);
@@ -97,10 +116,12 @@ export async function startDaemon(): Promise<void> {
             id,
             ...(s.name ? { name: s.name } : {}),
             ...(s.group ? { group: s.group } : {}),
-            engine: s.engineProcess.type,
+            engine: s.engineProcess?.type ?? "extension",
+            ...(s.tabId !== undefined ? { tabId: s.tabId, ownedTab: !!s.createdByTb } : {}),
             createdAt: s.createdAt.toISOString(),
             lastUsedAt: s.lastUsedAt.toISOString(),
           })),
+          bridges: listBridges(),
           engines: Array.from(engineProcesses.entries()).map(([key, ep]) => ({
             key,
             type: ep.type,
@@ -128,6 +149,10 @@ export async function startDaemon(): Promise<void> {
           name?: string;
           group?: string;
           visible?: boolean;
+          /** Bind to a tab the user already has open, instead of creating one. */
+          tabId?: number;
+          /** Which connected Chrome profile to use, if more than one. */
+          bridge?: string;
         };
         const engineType = body.engine ?? "auto";
         const needsScreenshot = body.needsScreenshot ?? false;
@@ -146,6 +171,89 @@ export async function startDaemon(): Promise<void> {
             },
             { status: 429 },
           );
+        }
+
+        // --- Extension bridge: drive a Chrome the user is already running ---
+        // Nothing to launch and no /json/new to call — we bind to a real tab
+        // and relay CDP through the extension.
+        // Resolve "auto" against config first, so `tb use chrome` (which sets
+        // defaultEngine) routes every later command through the bridge.
+        const cfgDefault = loadConfig().defaultEngine;
+        const resolvedType = engineType === "auto" ? cfgDefault : engineType;
+        const wantsBridge = resolvedType === "extension" || body.tabId !== undefined;
+        if (wantsBridge) {
+          const bridge = getBridge(body.bridge);
+          if (!bridge) {
+            return Response.json(
+              {
+                error:
+                  "No tb extension is connected. Run 'tb extension install' " +
+                  "(one time, no Chrome restart needed).",
+              },
+              { status: 400 },
+            );
+          }
+
+          // An explicit tabId means "this tab I already have open" — tb must
+          // never close it. A tab tb creates here is tb's to clean up.
+          const createdByTb = body.tabId === undefined;
+          const tabId = createdByTb
+            ? await bridge.createTab(body.url)
+            : body.tabId!;
+
+          try {
+            await bridge.attach(tabId);
+          } catch (err) {
+            if (createdByTb) await bridge.closeTab(tabId).catch(() => {});
+            return Response.json(
+              {
+                error:
+                  `Could not attach to tab ${tabId}: ${err instanceof Error ? err.message : err}. ` +
+                  `Chrome allows one debugger per tab — close DevTools on it and retry.`,
+              },
+              { status: 400 },
+            );
+          }
+
+          const bridgeCdp = new BridgeCDPClient(bridge, tabId);
+          const bridgeSession = new Session(
+            bridgeCdp,
+            "chromium",
+            { width: config.viewport.width, height: config.viewport.height },
+            true, // real browser: skip the UA override and stealth patches
+          );
+          await bridgeSession.init();
+          await bridgeSession.enableEvents();
+          bridgeSession.enableDVR();
+
+          // A tab tb just created already went to `url` via chrome.tabs.create;
+          // navigating an existing tab is an explicit act the caller asks for.
+          if (body.url && !createdByTb) await bridgeSession.goto(body.url);
+
+          const bridgeSessionId = randomId();
+          sessions.set(bridgeSessionId, {
+            id: bridgeSessionId,
+            name: body.name,
+            group: body.group,
+            session: bridgeSession,
+            cdp: bridgeCdp,
+            createdAt: new Date(),
+            lastUsedAt: new Date(),
+            bridge,
+            tabId,
+            createdByTb,
+          });
+
+          return Response.json({
+            sessionId: bridgeSessionId,
+            name: body.name,
+            engine: "extension",
+            tabId,
+            ownedTab: createdByTb,
+            bridge: bridge.label,
+            sessions: sessions.size,
+            limit: maxSessions,
+          });
         }
 
         const engine = await resolveEngine(engineType, needsScreenshot);
@@ -291,6 +399,12 @@ export async function startDaemon(): Promise<void> {
             break;
           case "url":
             result = await session.url();
+            break;
+          case "isBlocked":
+            result = await session.isBlocked();
+            break;
+          case "waitForSettled":
+            result = await session.waitForSettled(params.timeout as number | undefined);
             break;
           case "click":
             await session.click(params.selector as string);
@@ -507,11 +621,22 @@ export async function startDaemon(): Promise<void> {
       if (method === "DELETE" && path.startsWith("/session/")) {
         const sessionId = path.split("/session/")[1];
 
+        // Closing a bridge session always detaches the debugger, but only
+        // closes the tab when tb was the one that opened it. Closing a tab the
+        // user had open themselves would be the worst bug this feature could
+        // have, so the rule lives here and is enforced again in the extension.
+        const releaseTab = async (managed: ManagedSession) => {
+          await managed.cdp.close().catch(() => {});
+          if (managed.bridge && managed.tabId !== undefined && managed.createdByTb) {
+            await managed.bridge.closeTab(managed.tabId).catch(() => {});
+          }
+        };
+
         // Special: DELETE /session/all — close ALL sessions
         if (sessionId === "all") {
           let count = 0;
           for (const [id, managed] of sessions) {
-            await managed.cdp.close().catch(() => {});
+            await releaseTab(managed);
             sessions.delete(id);
             count++;
           }
@@ -527,10 +652,31 @@ export async function startDaemon(): Promise<void> {
           }
         }
         if (managed) {
-          await managed.cdp.close();
+          await releaseTab(managed);
           sessions.delete(realId);
         }
         return Response.json({ ok: true });
+      }
+
+      // GET /bridges — connected Chrome profiles
+      if (method === "GET" && path === "/bridges") {
+        return Response.json({ bridges: listBridges() });
+      }
+
+      // GET /bridge/tabs — tabs open in a connected profile
+      if (method === "GET" && path === "/bridge/tabs") {
+        const bridge = getBridge(url.searchParams.get("bridge") ?? undefined);
+        if (!bridge) {
+          return Response.json(
+            {
+              error:
+                "No tb extension is connected. Run 'tb extension install' " +
+                "(one time, no Chrome restart needed).",
+            },
+            { status: 400 },
+          );
+        }
+        return Response.json({ bridge: bridge.label, tabs: await bridge.tabs() });
       }
 
       // POST /engine/install
@@ -559,6 +705,14 @@ export async function startDaemon(): Promise<void> {
         err instanceof Error ? err.message : String(err);
       return Response.json({ error: message }, { status: 500 });
     }
+  }
+
+  // The extension dials us, so the listener has to exist before Chrome ever
+  // tries. Starting it unconditionally means an already-installed extension
+  // reconnects on its own after a daemon restart.
+  const bridgePort = startBridgeServer();
+  if (bridgePort === null) {
+    console.error("Bridge server could not bind — `tb tabs`/`tb attach` will be unavailable.");
   }
 
   writeDaemonPid(process.pid);
@@ -594,6 +748,57 @@ export async function daemonFetch(
   return data;
 }
 
+const DAEMON_LOCK = join(dirname(DAEMON_SOCK), "daemon.lock");
+/** A spawn that hasn't produced a live socket within this long is presumed dead. */
+const LOCK_STALE_MS = 15000;
+
+/** Poll /status until the daemon answers, or give up after `timeout`. */
+async function waitForDaemonReady(timeout: number): Promise<boolean> {
+  const start = Date.now();
+  while (Date.now() - start < timeout) {
+    try {
+      await daemonFetch("/status");
+      return true;
+    } catch {}
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  return false;
+}
+
+/**
+ * Take the spawn lock, atomically. Returns true if we own it.
+ *
+ * `wx` fails if the file exists, and that check-and-create is a single
+ * syscall — which is the whole point. Without it two concurrent `tb`
+ * invocations both see "no daemon" and both spawn one, and the loser's
+ * sessions live in an orphaned process ("Session not found" at random).
+ */
+function acquireSpawnLock(): boolean {
+  try {
+    const fd = openSync(DAEMON_LOCK, "wx");
+    writeSync(fd, String(process.pid));
+    closeSync(fd);
+    return true;
+  } catch {
+    // Someone holds it. Reap it if the holder died or stalled.
+    try {
+      const holder = parseInt(readFileSync(DAEMON_LOCK, "utf8").trim(), 10);
+      const age = Date.now() - statSync(DAEMON_LOCK).mtimeMs;
+      if ((holder && !isProcessRunning(holder)) || age > LOCK_STALE_MS) {
+        unlinkSync(DAEMON_LOCK);
+        return acquireSpawnLock();
+      }
+    } catch {}
+    return false;
+  }
+}
+
+function releaseSpawnLock(): void {
+  try {
+    unlinkSync(DAEMON_LOCK);
+  } catch {}
+}
+
 export async function ensureDaemon(): Promise<void> {
   // Check if already running
   const pid = getDaemonPid();
@@ -609,32 +814,42 @@ export async function ensureDaemon(): Promise<void> {
 
   ensureTBDir();
 
-  // Clean up stale socket
-  if (existsSync(DAEMON_SOCK)) {
-    try {
-      unlinkSync(DAEMON_SOCK);
-    } catch {}
+  if (!acquireSpawnLock()) {
+    // Another `tb` is starting the daemon right now — wait for it rather than
+    // racing a second one into existence.
+    if (await waitForDaemonReady(15000)) return;
+    throw new Error("Failed to start daemon (another start is in progress)");
   }
 
-  // Start daemon as background process
-  const daemonScript = new URL("./daemon.ts", import.meta.url).pathname;
-  const proc = spawn("bun", ["run", daemonScript, "--daemon"], {
-    detached: true,
-    stdio: "ignore",
-    cwd: homedir(),
-  });
-  proc.unref();
-
-  // Wait for daemon to be ready
-  const start = Date.now();
-  while (Date.now() - start < 10000) {
+  try {
+    // Re-check under the lock: the holder we queued behind may have just
+    // finished, in which case there is nothing to do.
     try {
       await daemonFetch("/status");
       return;
     } catch {}
-    await new Promise((r) => setTimeout(r, 200));
+
+    // Clean up stale socket
+    if (existsSync(DAEMON_SOCK)) {
+      try {
+        unlinkSync(DAEMON_SOCK);
+      } catch {}
+    }
+
+    // Start daemon as background process
+    const daemonScript = new URL("./daemon.ts", import.meta.url).pathname;
+    const proc = spawn("bun", ["run", daemonScript, "--daemon"], {
+      detached: true,
+      stdio: "ignore",
+      cwd: homedir(),
+    });
+    proc.unref();
+
+    if (await waitForDaemonReady(10000)) return;
+    throw new Error("Failed to start daemon");
+  } finally {
+    releaseSpawnLock();
   }
-  throw new Error("Failed to start daemon");
 }
 
 export async function stopDaemon(): Promise<void> {

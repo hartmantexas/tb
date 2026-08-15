@@ -108,6 +108,63 @@ tb --session test annotate /tmp/annotated.png      # See what's clickable
 tb kill test
 ```
 
+## Scraping
+
+Bulk-scrape a list of URLs into JSONL — resumable, jittered, and it stops instead of
+hammering a captcha.
+
+```bash
+tb open https://site.com --visible -e c -n s --new     # headful: beats bot detection
+tb --session s harvest urls.txt \
+   --schema '{"title":"h1","price":".price","img":"img@src"}' \
+   --out data.jsonl --settle --jitter 3,7
+```
+
+Re-running skips anything already in `data.jsonl`, so a halt costs you nothing.
+For site-specific logic use `--recipe file.js` instead of `--schema` — a recipe is
+plain JS whose last expression is the record (see `src/recipes/aliexpress.js`).
+
+| Situation | Command |
+|---|---|
+| Many pages → structured data | `tb harvest <urls.txt> --out data.jsonl` |
+| Site needs you logged in | `tb use chrome` — drive your own browser |
+| Page empty / bot-blocked | add `--visible` |
+| Client-rendered, content not there yet | `tb wait --settled` |
+| Need an image URL or href | `tb extract '{"img":"img@src"}'` |
+| Is this a captcha wall? | `tb blocked` |
+
+**`--visible` matters.** Some sites (Alibaba/AliExpress among them) fingerprint
+headless Chrome and return a page shell with no content — no error, just a blank
+result. A headful window renders it normally.
+
+`tb open` returns the **real** HTTP status plus a `blocked` flag, so you can tell a
+404 or a challenge page from a genuine load.
+
+## Your own browser, your own logins
+
+Anything behind a login is painful in a throwaway browser. Instead, let tb drive the
+Chrome you already use — with your cookies, your sessions, and your extensions.
+
+```bash
+tb extension install     # one time. no restart — you stay logged into everything
+tb use chrome            # route tb through your browser
+
+tb tabs                  # tabs you already have open
+tb attach 2 -n shop      # drive one of them
+tb --session shop extract '{"price":".price"}'
+
+tb open https://site.com/item -n new     # or open a fresh tab in your window
+```
+
+The extension is loaded **per Chrome profile**, and that's how you pick one — load it
+in the profile you want, or in several and choose with `--bridge <name>`.
+
+Two rules worth knowing: tb never closes a tab it didn't open (`tb kill` just detaches
+from yours), and `tb stop` never touches your browser. Attached tabs show Chrome's
+"started debugging this browser" strip — that's the price of not restarting Chrome.
+
+Go back to tb's own throwaway browser any time with `tb use tb`.
+
 ## Why
 
 
@@ -233,13 +290,31 @@ tb status                              # Daemon status (engines, sessions, uptim
 tb stop                                # Stop daemon + all engines
 ```
 
+### Your Own Browser (Extension Bridge)
+```bash
+tb extension install                   # Load the bridge into Chrome (one time, no restart)
+tb extension path                      # Print the folder to load unpacked
+tb bridges                             # Which Chrome profiles are connected
+tb use chrome                          # Route every command through your browser
+tb use tb                              # Back to tb's own throwaway browser
+
+tb tabs                                # Tabs you already have open, numbered
+tb attach <n|title|url> -n <name>      # Bind a session to an existing tab
+tb open <url> -n <name>                # Open a new tab in your window
+tb <cmd> --tab <n|title|url>           # One-off against an existing tab
+tb <cmd> --bridge <profile>            # Pick a profile when several are connected
+```
+
+`tb attach 2`, `tb attach aliexpress`, and `tb --tab aliexpress title` are all the same
+kind of lookup — a number from `tb tabs`, or any substring of a tab's title or URL.
+
 ### JSON Mode (for agents)
 
 Every command supports `--json` for structured output:
 
 ```bash
 tb --json open http://example.com
-# {"status":200,"url":"https://example.com/"}
+# {"status":200,"url":"https://example.com/","blocked":false}
 
 tb --json title
 # {"title":"Example Domain"}
@@ -325,6 +400,12 @@ curl http://localhost:7171/cookies
 - **Engine auto-selection**: `auto` mode picks Lightpanda for everything. If you explicitly use `--engine chromium`, it'll use Chrome.
 - **Session isolation**: Each `tb open --new` creates an independent session. Multiple agents can use `tb` concurrently with `--session <id>`.
 - **Lean core**: The CLI, daemon, CDP client, and engine management use only bun/node built-ins. Pixel-perfect screenshots come from the standalone **Blitz** binary (Rust); the JS approximation fallback uses takumi/satori + resvg.
+- **The extension bridge is a transport, not an engine**: `chrome.debugger.sendCommand` *is* CDP, so the tb extension relays it verbatim and `BridgeCDPClient` presents the same interface as a raw socket. That's why every `Session` command works against your own browser without a second implementation.
+
+```
+bin/tb → src/cli.ts → daemon ─┬─ CDP socket ──────────── browser tb launched
+                              └─ WebSocket ── extension ─ browser you're already using
+```
 
 ## Engines
 
@@ -336,6 +417,10 @@ curl http://localhost:7171/cookies
 **When to use which:**
 - **Lightpanda** (default): Scraping, text extraction, form filling, JS evaluation, testing APIs, most agent tasks
 - **Chromium**: Visual regression testing, pixel-perfect screenshots, pages that need full CSS rendering
+- **Extension bridge** (`-e ext`): Anything that needs you logged in, or a tab you already
+  have open. Not a browser tb launches — it drives the Chrome you're running, with your
+  cookies, sessions, and extensions. See
+  [Your own browser, your own logins](#your-own-browser-your-own-logins).
 
 ## Concurrent Usage
 
@@ -499,6 +584,10 @@ tb events                          # Live console, navigation, network errors
 }
 ```
 
+`defaultEngine` accepts `auto`, `chromium`, `lightpanda`, or `extension`. `tb use chrome`
+sets it to `extension` and `tb use tb` sets it back — that's all those commands do, so
+the routing survives daemon restarts.
+
 ## File Structure
 
 ```
@@ -506,11 +595,22 @@ tb events                          # Live console, navigation, network errors
 ├── config.json          # Configuration
 ├── daemon.sock          # Unix socket (daemon IPC)
 ├── daemon.pid           # Daemon process ID
+├── daemon.lock          # Spawn lock (stops concurrent calls racing in two daemons)
+├── bridge.json          # Port the extension bridge is listening on
 ├── engines/
 │   ├── lightpanda       # Lightpanda binary
 │   └── chromium/        # Chrome headless shell
 └── fonts/               # Custom fonts for the fallback renderer
     └── *.ttf            # Place .ttf files here
+```
+
+In the repo:
+
+```
+extension/               # The Chrome extension you load unpacked
+├── manifest.json
+└── background.js        # Relays CDP via chrome.debugger
+src/bridge.ts            # Daemon-side WebSocket server + BridgeCDPClient
 ```
 
 ## License
