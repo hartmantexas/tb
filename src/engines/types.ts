@@ -1,6 +1,11 @@
 import type { ChildProcess } from "child_process";
 
-export type EngineType = "lightpanda" | "chromium" | "auto";
+/**
+ * "extension" is not a launchable engine — it's the tb extension bridge into a
+ * Chrome the user is already running. It has no process, so the daemon handles
+ * it before it ever reaches `resolveEngine`.
+ */
+export type EngineType = "lightpanda" | "chromium" | "extension" | "auto";
 
 export interface EngineInfo {
   type: "lightpanda" | "chromium";

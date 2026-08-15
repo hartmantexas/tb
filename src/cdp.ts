@@ -3,7 +3,7 @@
  * Works with both Lightpanda and Chromium — they both speak CDP.
  */
 
-type Callback = (params: Record<string, unknown>) => void;
+export type Callback = (params: Record<string, unknown>) => void;
 
 interface PendingCall {
   resolve: (result: unknown) => void;
@@ -11,7 +11,30 @@ interface PendingCall {
   timer: ReturnType<typeof setTimeout>;
 }
 
-export class CDPClient {
+/**
+ * Everything `Session` needs from a CDP transport.
+ *
+ * There are two implementations: `CDPClient` (a direct WebSocket to a browser
+ * tb launched) and `BridgeCDPClient` (relayed through the tb extension into a
+ * Chrome the user is already running). Session is written against this
+ * interface so the same 1700 lines drive both — structural typing alone won't
+ * do it, because CDPClient has private fields.
+ */
+export interface CDPLike {
+  sessionId: string | null;
+  send(
+    method: string,
+    params?: Record<string, unknown>,
+    timeout?: number,
+  ): Promise<unknown>;
+  on(event: string, callback: Callback): void;
+  off(event: string, callback: Callback): void;
+  once(event: string): Promise<Record<string, unknown>>;
+  close(): Promise<void>;
+  readonly isConnected: boolean;
+}
+
+export class CDPClient implements CDPLike {
   private ws: WebSocket | null = null;
   private id = 0;
   private pending = new Map<number, PendingCall>();

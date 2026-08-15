@@ -1,4 +1,4 @@
-import { CDPClient } from "./cdp.js";
+import type { CDPLike } from "./cdp.js";
 import type { EngineType } from "./engines/types.js";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
@@ -283,9 +283,16 @@ export class Session {
   private viewport: { width: number; height: number };
 
   constructor(
-    private cdp: CDPClient,
+    private cdp: CDPLike,
     private engineType: "lightpanda" | "chromium",
     viewport?: { width: number; height: number },
+    /**
+     * True when we're driving the user's own Chrome through the extension
+     * bridge. Suppresses the UA override and the stealth patches below — a real
+     * headful Chrome has nothing to hide, and spoofing it can only introduce
+     * contradictions (see init).
+     */
+    private native = false,
   ) {
     this.viewport = viewport ?? { width: 1280, height: 720 };
   }
@@ -359,6 +366,13 @@ export class Session {
         this.cdp.send("Network.enable"),
         this.cdp.send("DOM.enable"),
       ]);
+
+      // Real Chrome, real profile, real user agent — nothing below applies.
+      // Pinning CHROME_VERSION over a browser that auto-updates would sooner or
+      // later contradict the actual UA, and the patches would de-native
+      // functions in a profile the user browses with for real. Both *create*
+      // the fingerprint they exist to hide.
+      if (this.native) return;
 
       // Override user-agent to remove "HeadlessChrome" — the #1 detection signal.
       // userAgentMetadata is mandatory: without it navigator.userAgentData.brands
