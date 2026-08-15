@@ -179,6 +179,7 @@ const jsonMode = flags.json === "true";
 const rawEngine = (flags.engine || flags.e) as string | undefined;
 const engineFlag = rawEngine === "c" ? "chromium"
   : rawEngine === "lp" ? "lightpanda"
+  : rawEngine === "ext" || rawEngine === "x" ? "extension"
   : rawEngine;
 
 // Viewport presets: -w fhd, -w hd, -w mac, -w mobile, -w ipad, or -w 1440x900
@@ -274,6 +275,47 @@ function die(msg: string): never {
 
 let currentSessionId: string | null = null;
 
+interface BridgeTab {
+  tabId: number;
+  windowId: number;
+  title: string;
+  url: string;
+  active: boolean;
+  createdByTb?: boolean;
+}
+
+async function fetchTabs(): Promise<{ bridge: string; tabs: BridgeTab[] }> {
+  const q = flags.bridge ? `?bridge=${encodeURIComponent(flags.bridge)}` : "";
+  return (await daemonFetch(`/bridge/tabs${q}`)) as { bridge: string; tabs: BridgeTab[] };
+}
+
+/**
+ * Resolve a tab spec to a tabId. Accepts the 1-based number shown by `tb tabs`,
+ * or any substring of a tab's title or URL — typing `tb attach aliexpress` is
+ * usually faster than looking up a number.
+ */
+async function resolveTab(spec: string): Promise<BridgeTab> {
+  const { tabs } = await fetchTabs();
+  if (!tabs.length) die("No tabs available in that Chrome profile.");
+
+  if (/^\d+$/.test(spec)) {
+    const tab = tabs[parseInt(spec, 10) - 1];
+    if (!tab) die(`No tab ${spec}. Run 'tb tabs' — there are ${tabs.length}.`);
+    return tab;
+  }
+
+  const needle = spec.toLowerCase();
+  const hits = tabs.filter(
+    (t) => t.title.toLowerCase().includes(needle) || t.url.toLowerCase().includes(needle),
+  );
+  if (!hits.length) die(`No open tab matches "${spec}". Run 'tb tabs' to see them.`);
+  if (hits.length > 1) {
+    const list = hits.map((t) => `  ${t.title || t.url}`).join("\n");
+    die(`"${spec}" matches ${hits.length} tabs — be more specific:\n${list}`);
+  }
+  return hits[0];
+}
+
 async function getSession(needsScreenshot = false): Promise<string> {
   // --session flag: use a specific session (by ID or name)
   if (flags.session) {
@@ -304,6 +346,9 @@ async function getSession(needsScreenshot = false): Promise<string> {
     return currentSessionId;
   }
 
+  // --tab binds to a tab the user already has open, rather than making one.
+  const tabId = flags.tab ? (await resolveTab(flags.tab)).tabId : undefined;
+
   // Create new session
   const result = (await daemonFetch("/session/create", {
     method: "POST",
@@ -312,6 +357,8 @@ async function getSession(needsScreenshot = false): Promise<string> {
       needsScreenshot,
       ...(sessionName ? { name: sessionName } : {}),
       ...(flags.group ? { group: flags.group } : {}),
+      ...(tabId !== undefined ? { tabId } : {}),
+      ...(flags.bridge ? { bridge: flags.bridge } : {}),
       // Headful window: some bot defenses (Alibaba/Baxia-class) fingerprint
       // headless Chrome and silently serve an empty shell. --visible is the
       // escape hatch.
@@ -431,6 +478,12 @@ Commands:
   intercept block <pat>   Block URLs matching pattern
   viewport <size>         Change viewport (mobile, tablet, hd, fhd, WxH)
 
+  extension install       Connect tb to your own Chrome (one time, no restart)
+  tabs                    List tabs open in your Chrome
+  attach <n|text>         Drive a tab you already have open
+  bridges                 Connected Chrome profiles
+  use chrome | use tb     Route commands to your Chrome, or back to tb's own
+
   ps                      List all active sessions
   kill <session-id>       Kill a specific session
   kill-all                Kill all sessions
@@ -447,7 +500,9 @@ Commands:
   serve [port]            Start HTTP API server
 
 Flags:
-  -e <engine>       Engine: c (chromium), lp (lightpanda), auto
+  -e <engine>       Engine: c (chromium), lp (lightpanda), ext (your Chrome), auto
+  --tab <n|text>    Target a tab you already have open
+  --bridge <name>   Which Chrome profile, when several are connected
   -w <size>         Viewport: fhd, hd, mac, air, mobile, ipad, 1440x900
   -n <name>         Name this session (for parallel agent workflows)
   --session <id>    Use session by ID or name
@@ -906,6 +961,140 @@ Examples:
           }
         } catch {
           output(jsonMode ? [] : "Daemon not running");
+        }
+        break;
+      }
+
+      case "extension": {
+        const sub = positional[0] ?? "install";
+        const extDir = new URL("../extension", import.meta.url).pathname;
+
+        if (sub === "path") {
+          output(jsonMode ? { path: extDir } : extDir);
+          break;
+        }
+        if (sub !== "install") die("Usage: tb extension install");
+
+        // The daemon has to be listening before Chrome tries to dial it.
+        await ensureDaemon();
+
+        const already = (await daemonFetch("/bridges")) as { bridges: Array<{ label: string }> };
+        if (already.bridges.length) {
+          output(
+            jsonMode
+              ? { ok: true, bridges: already.bridges }
+              : `Already connected: ${already.bridges.map(b => b.label).join(", ")}`,
+          );
+          break;
+        }
+
+        // Chrome blocks programmatic unpacked installs and refuses chrome://
+        // URLs from the command line, so this is genuinely a manual step.
+        try {
+          const { execSync } = await import("child_process");
+          execSync("pbcopy", { input: extDir });
+        } catch {}
+        console.log(
+          `\nLoad the tb extension into Chrome — no restart needed:\n\n` +
+            `  1. Open \x1b[1mchrome://extensions\x1b[0m\n` +
+            `  2. Turn on \x1b[1mDeveloper mode\x1b[0m (top right)\n` +
+            `  3. Click \x1b[1mLoad unpacked\x1b[0m and pick this folder:\n\n` +
+            `     \x1b[36m${extDir}\x1b[0m   \x1b[2m(copied to your clipboard)\x1b[0m\n\n` +
+            `Load it in whichever profile you want tb to drive — that's how you\n` +
+            `choose the profile. You can load it in more than one.\n\n` +
+            `\x1b[2mWaiting for the extension to connect… (Ctrl-C to stop)\x1b[0m`,
+        );
+
+        const deadline = Date.now() + 180000;
+        let connected: Array<{ label: string }> = [];
+        while (Date.now() < deadline) {
+          await new Promise((r) => setTimeout(r, 1000));
+          try {
+            connected = ((await daemonFetch("/bridges")) as { bridges: Array<{ label: string }> }).bridges;
+            if (connected.length) break;
+          } catch {}
+        }
+        if (!connected.length) {
+          die("Timed out waiting for the extension. Re-run 'tb extension install' once it's loaded.");
+        }
+        console.log(`\n\x1b[32m✓\x1b[0m Connected: \x1b[1m${connected.map(b => b.label).join(", ")}\x1b[0m`);
+        console.log(`\nNext: \x1b[1mtb tabs\x1b[0m to see your open tabs, or \x1b[1mtb use chrome\x1b[0m to route everything here.`);
+        break;
+      }
+
+      case "bridges": {
+        await ensureDaemon();
+        const { bridges } = (await daemonFetch("/bridges")) as {
+          bridges: Array<{ key: string; label: string; connectedAt: string }>;
+        };
+        if (jsonMode) {
+          output({ bridges });
+        } else if (!bridges.length) {
+          console.log("No Chrome profile connected. Run: tb extension install");
+        } else {
+          for (const b of bridges) console.log(`  \x1b[32m●\x1b[0m ${b.label}`);
+          console.log(`\n${bridges.length} profile(s) connected.`);
+        }
+        break;
+      }
+
+      case "tabs": {
+        await ensureDaemon();
+        const { bridge, tabs } = await fetchTabs();
+        if (jsonMode) {
+          output({ bridge, tabs });
+          break;
+        }
+        if (!tabs.length) {
+          console.log("No tabs open (chrome:// pages can't be driven and are hidden).");
+          break;
+        }
+        console.log(`\x1b[2m${bridge}\x1b[0m\n`);
+        tabs.forEach((t, i) => {
+          const mark = t.active ? "\x1b[32m●\x1b[0m" : " ";
+          const title = (t.title || t.url).slice(0, 48).padEnd(48);
+          let host = t.url;
+          try { host = new URL(t.url).host; } catch {}
+          console.log(`  ${String(i + 1).padStart(3)} ${mark} ${title} \x1b[2m${host}\x1b[0m`);
+        });
+        console.log(`\n${tabs.length} tab(s). Use: tb attach <number>`);
+        break;
+      }
+
+      case "attach": {
+        const spec = positional[0];
+        if (!spec) die("Usage: tb attach <number|title|url> [-n name]");
+        await ensureDaemon();
+        const tab = await resolveTab(spec);
+        const name = flags.name || flags.n;
+        const result = (await daemonFetch("/session/create", {
+          method: "POST",
+          body: {
+            engine: "extension",
+            tabId: tab.tabId,
+            ...(name ? { name } : {}),
+            ...(flags.group ? { group: flags.group } : {}),
+            ...(flags.bridge ? { bridge: flags.bridge } : {}),
+          },
+        })) as { sessionId: string; tabId: number };
+        output(
+          jsonMode
+            ? { sessionId: result.sessionId, tabId: result.tabId, name }
+            : `Attached to "${tab.title || tab.url}"${name ? ` as ${name}` : ""} (session ${result.sessionId.slice(0, 8)})`,
+        );
+        break;
+      }
+
+      case "use": {
+        const target = positional[0];
+        if (target === "chrome" || target === "ext" || target === "extension") {
+          saveConfig({ defaultEngine: "extension" });
+          output(jsonMode ? { defaultEngine: "extension" } : "Routing tb through your Chrome. Undo with: tb use tb");
+        } else if (target === "tb" || target === "own" || target === "chromium") {
+          saveConfig({ defaultEngine: "chromium" });
+          output(jsonMode ? { defaultEngine: "chromium" } : "Routing tb through its own browser.");
+        } else {
+          die("Usage: tb use chrome   (drive your own Chrome)\n       tb use tb       (back to tb's own browser)");
         }
         break;
       }
@@ -2459,10 +2648,21 @@ Examples:
         if (presets[size]) { [w, h] = presets[size]; }
         else if (size?.includes("x")) { [w, h] = size.split("x").map(Number); }
         else { die("Usage: tb viewport <mobile|tablet|hd|fhd|WxH>"); break; }
-        await sessionCmd("evaluate", { expression: `window.__tbViewport = {w:${w},h:${h}}` });
-        // Note: changing viewport requires Emulation.setDeviceMetricsOverride via CDP
-        // This is a simplified version — full implementation would go through daemon
-        output(jsonMode ? { width: w, height: h } : `Viewport: ${w}x${h}`);
+        // Must go through Emulation.setDeviceMetricsOverride — this used to only
+        // set `window.__tbViewport` and print success, so `tb viewport mobile`
+        // reported 390x844 while innerWidth stayed 1920. A command that lies
+        // about having worked is worse than one that fails.
+        await sessionCmd("setViewport", { width: w, height: h });
+        const applied = (await sessionCmd("evaluate", {
+          expression: `({w: window.innerWidth, h: window.innerHeight})`,
+        })) as { w: number; h: number };
+        if (applied && (applied.w !== w || applied.h !== h)) {
+          console.error(
+            `\x1b[33m⚠ Requested ${w}x${h} but the page reports ${applied.w}x${applied.h}.\x1b[0m ` +
+              `Headful Chrome clamps the window to ~500px wide; use headless for narrow viewports.`,
+          );
+        }
+        output(jsonMode ? { width: w, height: h, applied } : `Viewport: ${applied?.w ?? w}x${applied?.h ?? h}`);
         break;
       }
 
@@ -2557,8 +2757,15 @@ Examples:
       die("Lightpanda not found. Run: tb install");
     }
 
-    // Friendly error for daemon connection failures
-    if (msg.includes("ECONNREFUSED") || msg.includes("daemon.sock") || msg.includes("connect")) {
+    // Friendly error for daemon connection failures. Matched narrowly on
+    // purpose: a bare `includes("connect")` also swallows every message with
+    // the word "connected" in it — "No tb extension is connected" was being
+    // reported as a dead daemon.
+    if (
+      msg.includes("ECONNREFUSED") ||
+      msg.includes("daemon.sock") ||
+      /failed to connect|unable to connect|connection refused/i.test(msg)
+    ) {
       die("Failed to start daemon. Check: tb status");
     }
 

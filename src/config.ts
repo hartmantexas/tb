@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, writeFileSync } from "fs";
 import { CONFIG_FILE, ensureTBDir } from "./utils.js";
 
-export type EngineType = "lightpanda" | "chromium" | "auto";
+export type EngineType = "lightpanda" | "chromium" | "extension" | "auto";
 
 export interface TBConfig {
   defaultEngine: EngineType;
