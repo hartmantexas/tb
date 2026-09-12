@@ -1700,7 +1700,7 @@ export class Session {
 
     await this.cdp.send("Page.startScreencast", {
       format: "jpeg",
-      quality: opts?.quality ?? 60,
+      quality: opts?.quality ?? 92,
       maxWidth: opts?.maxWidth ?? 1920,
       maxHeight: opts?.maxHeight ?? 1080,
       everyNthFrame: 1,

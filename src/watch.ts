@@ -42,7 +42,7 @@ async function handleAPI(req: Request, url: URL): Promise<Response | null> {
 
   if (path === "/api/frame") {
     const sid = url.searchParams.get("session");
-    const quality = parseInt(url.searchParams.get("quality") || "55");
+    const quality = parseInt(url.searchParams.get("quality") || "92");
     if (!sid) return Response.json({ error: "need session" }, { status: 400 });
     const [ss, pageUrl, title, vp] = await Promise.all([
       sessionCmd(sid, "screenshot", { format: "jpeg", quality }),
@@ -61,7 +61,7 @@ async function handleAPI(req: Request, url: URL): Promise<Response | null> {
   // SSE screencast — push frames in real-time instead of polling
   if (path === "/api/screencast") {
     const sid = url.searchParams.get("session");
-    const quality = parseInt(url.searchParams.get("quality") || "70");
+    const quality = parseInt(url.searchParams.get("quality") || "92");
     if (!sid) return Response.json({ error: "need session" }, { status: 400 });
 
     // Start screencast if not already started
@@ -644,11 +644,11 @@ async function refreshEls(){
       if(inp.type==='hidden'||!vis(inp))continue;
       var r=inp.getBoundingClientRect();var n=idx++;
       if(inView(r)){results.push({t:'input',x:Math.round(r.x),y:Math.round(r.y),w:Math.round(r.width),h:Math.round(r.height),cx:Math.round(r.x+r.width/2),cy:Math.round(r.y+r.height/2),label:(inp.getAttribute('placeholder')||inp.name||'input').slice(0,30)})}}
-    var btns=document.querySelectorAll('button,input[type="submit"],input[type="button"],[role="button"]');
+    var btns=document.querySelectorAll('button,input[type="submit"],input[type="button"],[role="button"],[onclick]');
     for(var j=0;j<btns.length;j++){var btn=btns[j];
       if(!vis(btn))continue;
-      var t=(btn.textContent||btn.value||btn.getAttribute('aria-label')||'').trim().replace(/\\s+/g,' ');
-      if(!t||seen.has(t))continue;seen.add(t);
+      var t=(btn.textContent||btn.value||btn.getAttribute('aria-label')||btn.getAttribute('title')||btn.className||'').trim().replace(/\\s+/g,' ');
+      if(!t)continue;if(t.length>60)t=t.slice(0,40);if(seen.has(t)){t=t+' '+(j+1)}seen.add(t);
       var r2=btn.getBoundingClientRect();
       if(inView(r2)){results.push({t:'button',x:Math.round(r2.x),y:Math.round(r2.y),w:Math.round(r2.width),h:Math.round(r2.height),cx:Math.round(r2.x+r2.width/2),cy:Math.round(r2.y+r2.height/2),label:t.slice(0,30)})}}
     var links=document.querySelectorAll('a[href]');
@@ -709,8 +709,8 @@ async function runCmd(raw){
       function inView(r){return r.width>5&&r.height>5&&r.x+r.width>0&&r.y+r.height>0&&r.x<vw&&r.y<vh}
       var inputs=document.querySelectorAll('input[type="text"],input[type="search"],input[type="email"],input[type="password"],input[type="url"],input[type="number"],input:not([type]),textarea');
       for(var i=0;i<inputs.length;i++){if(inputs[i].type==='hidden'||!vis(inputs[i]))continue;var r=inputs[i].getBoundingClientRect();if(inView(r))els.push({el:inputs[i],y:r.y,x:r.x})}
-      var btns=document.querySelectorAll('button,input[type="submit"],input[type="button"],[role="button"]');
-      for(var j=0;j<btns.length;j++){if(!vis(btns[j]))continue;var t=(btns[j].textContent||'').trim().replace(/\\s+/g,' ');if(!t||seen.has(t))continue;seen.add(t);var r2=btns[j].getBoundingClientRect();if(inView(r2))els.push({el:btns[j],y:r2.y,x:r2.x})}
+      var btns=document.querySelectorAll('button,input[type="submit"],input[type="button"],[role="button"],[onclick]');
+      for(var j=0;j<btns.length;j++){if(!vis(btns[j]))continue;var t=(btns[j].textContent||btns[j].value||btns[j].getAttribute('aria-label')||btns[j].getAttribute('title')||btns[j].className||'').trim().replace(/\\s+/g,' ');if(!t)continue;if(t.length>60)t=t.slice(0,40);if(seen.has(t)){t=t+' '+(j+1)}seen.add(t);var r2=btns[j].getBoundingClientRect();if(inView(r2))els.push({el:btns[j],y:r2.y,x:r2.x})}
       var links=document.querySelectorAll('a[href]');
       for(var k=0;k<links.length;k++){if(!vis(links[k]))continue;var at=(links[k].textContent||'').trim().replace(/\\s+/g,' ');if(!at||at.length<2||seen.has(at))continue;seen.add(at);var r3=links[k].getBoundingClientRect();if(inView(r3))els.push({el:links[k],y:r3.y,x:r3.x})}
       els.sort(function(a,b){var dy=a.y-b.y;return Math.abs(dy)>15?dy:a.x-b.x});
@@ -1173,7 +1173,7 @@ async function frames(){
  }
  await Promise.all(allTiles.map(async({gk,sid})=>{
    try{
-     const d=await(await fetch('/api/frame?session='+sid+'&quality='+(sid===focused?80:60))).json();
+     const d=await(await fetch('/api/frame?session='+sid+'&quality='+(sid===focused?92:80))).json();
      const w=windows[gk];if(!w)return;
      const img=w.el.querySelector('img[data-sid="'+sid+'"]');
      if(img&&d.base64){img.src='data:image/jpeg;base64,'+d.base64;W=d.w||W;H=d.h||H}
@@ -1200,7 +1200,7 @@ function startServer(mode: "watch" | "cc", sid?: string, name?: string, groupFil
       try {
         if (p === "/" && mode === "watch" && sid) {
           if (!firstFrame) {
-            try { const [s, u] = await Promise.all([sessionCmd(sid, "screenshot", { format: "jpeg", quality: 70 }), sessionCmd(sid, "url")]); firstFrame = (s as any).base64; firstUrl = u as string; } catch {}
+            try { const [s, u] = await Promise.all([sessionCmd(sid, "screenshot", { format: "jpeg", quality: 92 }), sessionCmd(sid, "url")]); firstFrame = (s as any).base64; firstUrl = u as string; } catch {}
           }
           return new Response(watchHTML(sid, name || "session", firstFrame, firstUrl, groupFilter), { headers: { "Content-Type": "text/html" } });
         }
@@ -1208,7 +1208,7 @@ function startServer(mode: "watch" | "cc", sid?: string, name?: string, groupFil
         if (p.startsWith("/watch/")) {
           const wsid = p.slice(7); const sessions = await getSessions(); const s = sessions.find(s => s.id === wsid || s.name === wsid);
           let ff: string | undefined, fu: string | undefined;
-          try { const [s2, u] = await Promise.all([sessionCmd(wsid, "screenshot", { format: "jpeg", quality: 70 }), sessionCmd(wsid, "url")]); ff = (s2 as any).base64; fu = u as string; } catch {}
+          try { const [s2, u] = await Promise.all([sessionCmd(wsid, "screenshot", { format: "jpeg", quality: 92 }), sessionCmd(wsid, "url")]); ff = (s2 as any).base64; fu = u as string; } catch {}
           return new Response(watchHTML(wsid, s?.name || wsid.slice(0, 8), ff, fu), { headers: { "Content-Type": "text/html" } });
         }
         const r = await handleAPI(req, url); if (r) return r;
