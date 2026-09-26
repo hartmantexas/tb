@@ -419,111 +419,208 @@ async function main() {
 
   if (flags.help === "true" || !command || command === "help") {
     console.log(`
-tb — tiny browser for agents
+tb — terminal browser
+An agent-first browser you drive from the command line.
 v${VERSION}
 
 Usage: tb <command> [args] [flags]
 
-Commands:
-  open <url>              Navigate to a URL
-  screenshot [path]       Take a screenshot (--open to view)
-  shots <url> [outdir]    Capture across viewports (--viewports fhd,mobile,ipad)
-  elements                List interactive elements with numbers
-  tap <number>            Click element by number (from elements)
-  annotate [path]         Screenshot with numbered overlay badges
-  click <selector>        Click an element by CSS selector
-  clear <selector>        Clear an input field (React-compatible)
-  type <selector> <text>  Type text into an element
-  eval <expression>       Evaluate JavaScript
-  content                 Get page HTML
-  text                    Get page text content
-  title                   Get page title
-  url                     Get current URL
-  select <sel> <value>    Select dropdown value
-  wait <selector>         Wait for element to appear
+Engines: lightpanda (64MB, fast, no real SPA) · chromium (-e c, pixel-perfect)
+         extension (-e ext, your own logged-in Chrome — see "Your own Chrome")
+
+Navigation & capture:
+  open <url>              Navigate. Returns the REAL http status + a blocked flag,
+                          so "it resolved" is not the same as "it loaded"
+  screenshot [path]       Screenshot (--open to view, --full-page to scroll-capture)
+  shots <url> [outdir]    Same page across viewports (--viewports fhd,mobile,ipad)
+  view                    Render the page as pixels inside your terminal
+  viewport <size>         Resize: mobile, tablet, hd, fhd, mac, air, ipad, 1440x900
+  url / title             Current URL / page title
+
+The number system — interact without selectors:
+  elements, els           List interactive elements, each with a stable number
+  tap <n> [n2 n3 ...]     Click by number. Multiple numbers = click in sequence
+  annotate [path]         Screenshot with numbered badges drawn over each element
+  tap-ref @e1             Click by accessibility ref (from snapshot)
+
+Direct interaction:
+  click <selector>        Click by CSS selector
+  real-click <x> <y>      Click raw viewport coordinates via real input events —
+                          for canvas, maps, and anything that ignores synthetic clicks
+  type <selector> <text>  Type into an element
+  clear <selector>        Clear an input, React-compatible (dispatches a native
+                          input event, because .value = '' silently does nothing
+                          on a controlled component)
+  select <sel> <value>    Choose a dropdown value
+  drag <x1> <y1> <x2> <y2>  Smooth human-ish drag (--ms 600) for sliders, canvas editors
+  wait <selector>         Wait for an element to appear
+  wait --settled          Wait for a client-rendered page to STOP changing. Reach for
+                          this when the page loaded but the content isn't there yet
+
+Reading & extraction:
+  text                    Visible text
+  content                 Full HTML
+  read <url> [url2 ...]   Site-aware reading (GitHub, HN, etc). --follow N also reads
+                          N links deep from that page
+  scrape                  Reader-mode content extraction
+  describe / page         Structural summary — page type, forms, sections
+  snapshot                Accessibility tree (semantic elements + refs)
+  extract <schema>        Structured pull by CSS selector:
+                            tb extract '{"title":"h1","img":"img@src"}'
+                          Plain 'sel' gives text; 'sel@attr' gives an attribute —
+                          you need @src / @href for images and links
+  auto-extract            Zero-config: finds the repeating item pattern itself
+  find-similar <sel|#n>   Give it ONE element, get every structurally similar one.
+                          Product grids and article feeds without writing a selector
+                          (--threshold 0.3)
+  eval <expression>       Run JavaScript, return the result (--json)
   cookies                 List cookies
 
-  view                    Show page screenshot in terminal
-  live [url]              Interactive browser in terminal
-  watch [session]         Live viewer with tabs, bookmarks, click/type
-  cc                      Command center — grid of all sessions
+Scraping at volume:
+  harvest <urls-file>     Bulk-scrape a URL list to JSONL. Resumable (re-running skips
+                          what's already in --out), jittered, and it HALTS on a
+                          challenge instead of hammering it
+                            --recipe f.js   site-specific JS, last expression = record
+                            --schema '{..}' same syntax as extract
+                            --out data.jsonl --settle --jitter 3,7
+  blocked                 Is this page a captcha / bot-challenge wall?
+  intercept block <pat>   Block URLs matching a pattern
 
-  snapshot                Accessibility tree (semantic elements)
-  act "<action>"          Natural language action (no LLM)
-  tap-ref @e1             Click by accessibility ref
-  chat "<question>"       Send message to page AI, wait for response
-  read <url> [url2] ...   Site-aware reading (GitHub, HN, etc)
-  read --follow N         Read + follow N links from the page
-  scrape                  Smart content extraction (reader mode)
-  describe / page         Structural page summary (type, forms, sections)
+Live & interactive:
+  live [url]              Interactive browser in the terminal
+  browse [url]            Same as live
+  watch [session]         Live viewer with tabs, bookmarks, click and type
+  cc / dashboard          Command center — every session in one grid
+  events                  Stream page events (console, navigation, errors)
 
-  auth save <name>        Save auth state (cookies + localStorage)
-  auth load <name>        Restore auth into session
-  record <name>           Record actions to a script
-  rec <sec|start|stop|status> [out.mp4]  Video-record the session (any app;
-                          runs in the daemon, so every command between
-                          start and stop lands in the video)
-  drag <x1> <y1> <x2> <y2>  Smooth real-input drag (canvas editors, sliders)
-  replay <name>           Replay a recorded script
-  events                  Stream page events (console, nav, errors)
+Change detection:
   dom-snapshot            Take a structural DOM fingerprint
-  dom-diff                Diff DOM against previous snapshot
-  diff <baseline.png>     Compare screenshot to baseline
-  extract <schema>        Extract structured data by CSS selectors ('sel@attr' for img/href)
-  harvest <urls-file>     Bulk scrape a URL list -> JSONL (resumable, jittered)
-  blocked                 Is this page a bot-challenge wall?
-  wait --settled          Wait for a client-rendered page to stop changing
-  auto-extract            Zero-config structured data extraction (repeating items)
+  dom-diff, diff-dom      Diff the DOM against the previous snapshot
+  diff <baseline.png>     Compare a screenshot to a baseline (--threshold 0.01)
+
+Record & replay:
+  record <name>           Record your actions into a replayable script
+  replay <name>           Replay it
+  history                 DVR — every action this session took (--since <seconds>)
+  rec <sec|start|stop|status> [out.mp4]
+                          Video-record the session. Runs in the daemon, so every
+                          command between start and stop lands in the video
+  auth save <name>        Save auth state (cookies + localStorage) for reuse
+  auth load <name>        Restore it into a session
+  auth list | auth delete <name>
+
+Automation:
+  act "<action>"          Natural-language action, no LLM call
+  chat "<question>"       Send a message to a page's AI and wait for the reply
   workflow <file.json>    Run a multi-step workflow
-  intercept block <pat>   Block URLs matching pattern
-  viewport <size>         Change viewport (mobile, tablet, hd, fhd, WxH)
+  run <file.json>         Same, plus --record to video the whole run
+  batch 'cmd1;cmd2;cmd3'  Several commands, one invocation, results collected
+  pipe --links <sel>      Fan out: open matching links as tabs, --then runs on all
 
-  extension install       Connect tb to your own Chrome (one time, no restart)
-  tabs                    List tabs open in your Chrome
-  attach <n|text>         Drive a tab you already have open
+Your own Chrome (the extension bridge):
+  Anything behind a login is painful in a throwaway browser. Instead, let tb drive
+  the Chrome you already use — your cookies, your sessions, no restart.
+  The extension is loaded PER PROFILE, and that is how you pick one.
+
+  extension install       Connect tb to your Chrome. One time, no restart.
+                          Opens chrome://extensions for you and waits for the handshake
+  extension install --auto  Also try to click through Developer mode + Load unpacked
+                          for you, via macOS accessibility. Needs Accessibility
+                          permission for your terminal. Best effort — if it misses,
+                          you get the normal manual steps and lose nothing
+  extension path          Print the folder to load unpacked
+  extension status        Which profiles are connected right now
+  extension uninstall     How to remove it
   bridges                 Connected Chrome profiles
-  use chrome | use tb     Route commands to your Chrome, or back to tb's own
+  use chrome              Route every command through your Chrome
+  use tb                  Back to tb's own throwaway browser
+  tabs                    Tabs you already have open, numbered
+  attach <n|title|url>    Bind a session to a tab that's already open
+                          (a number from tabs, or any substring of its title or URL)
 
-  ps                      List all active sessions
-  kill <session-id>       Kill a specific session
-  kill-all                Kill all sessions
-  move <session> --group  Move session to a group (window)
-  group list              List all groups and their tabs
-  group rename <old> <new>  Rename a group
-  groups                  Quick group overview
-  batch 'cmd1;cmd2;cmd3'  Run multiple commands, collect results
-  pipe --links <sel>      Fan-out: open links as tabs, run --then on all
-  install [engine]        Install engine (lightpanda, chromium)
+  tb never closes a tab it didn't open — kill just detaches from yours.
+  tb stop never touches your browser.
+
+Sessions, groups, daemon:
+  Sessions are tabs. Groups are windows. One browser process serves them all, so
+  every session shares one cookie jar, one fingerprint, one IP — parallel fan-out
+  multiplies bot-detection risk without isolating anything. Sessions are not
+  garbage collected; kill them when done.
+
+  ps                      List active sessions
+  kill <id-or-name>       Kill one session
+  kill-all                Kill every session
+  move <session> --group  Move a session into a group (window)
+  group list              Groups and their tabs
+  group rename <old> <new>
+  groups                  Quick overview
+  status                  Daemon status — engines, sessions, uptime
+  stop                    Stop the daemon and all engines (never your own Chrome)
+  serve [port]            Start the HTTP API server
+
+Setup & diagnostics:
+  doctor                  What's installed, screenshot quality, and the exact
+                          command to fix whatever is missing. Run this first
+  setup                   Alias for doctor
+  install [engine]        Install an engine: lightpanda, chromium, render-engine, all
   engines                 List available engines
-  status                  Show daemon status
-  stop                    Stop daemon + all engines
-  serve [port]            Start HTTP API server
+  config                  Show all config
+  config max-sessions <n> Set the session cap (default 25)
 
 Flags:
-  -e <engine>       Engine: c (chromium), lp (lightpanda), ext (your Chrome), auto
-  --tab <n|text>    Target a tab you already have open
-  --bridge <name>   Which Chrome profile, when several are connected
+  -e <engine>       c (chromium), lp (lightpanda), ext (your Chrome), auto
   -w <size>         Viewport: fhd, hd, mac, air, mobile, ipad, 1440x900
-  -n <name>         Name this session (for parallel agent workflows)
-  --session <id>    Use session by ID or name
-  --json            Output as JSON (for agents)
-  --new             Create a new session
-  --visible         Headful window — use when a site blocks headless
-  --full-page       Full page screenshot
-  --open            Open screenshot in system viewer
-  --format <fmt>    Screenshot format: png, jpeg
+  -n <name>         Name this session — do this for parallel agent workflows
+  --session <id>    Target a session by ID or name
+  --new             Force a new session
+  --tab <n|text>    One-off against a tab you already have open
+  --bridge <name>   Which Chrome profile, when several are connected
+  --browser <name>  extension install: which Chromium-family browser to set up
+                    (chrome, brave, edge, canary, chromium)
+  --auto            extension install: attempt the Developer-mode toggle and the
+                    Load-unpacked click via macOS accessibility (best effort)
+  --group <name>    Target or assign a group (window)
+  --json            Structured output — use this for anything programmatic
+  --visible         Headful window. THE anti-bot escape hatch: some sites fingerprint
+                    headless Chrome and serve an empty shell with no error at all.
+                    If a page looks mysteriously blank, try this before debugging selectors
+  --settled         Wait for the page to stop mutating before returning
+  --settle          harvest: settle each page before extracting
+  --jitter <a,b>    harvest: random delay range in seconds between pages
+  --recipe <f.js>   harvest: site-specific extraction script
+  --schema <json>   harvest/extract: selector map
+  --out <file>      harvest: JSONL output (doubles as the resume checkpoint)
+  --viewports <l>   shots: comma-separated viewport list
+  --follow <n>      read: also read N linked pages
+  --links <sel>     pipe: selector for links to fan out on
+  --then <cmd>      pipe: command to run on every opened tab
+  --full-page       Full-page scroll capture
+  --open            Open the screenshot in your system viewer
+  --format <fmt>    png or jpeg
   --quality <n>     JPEG quality 0-100
+  --threshold <n>   diff / find-similar sensitivity
+  --since <sec>     history: only actions newer than this
+  --record          run: video the whole workflow
+  --depth <n>       Crawl/read depth
+  --limit <n>       Cap results
   --timeout <ms>    Command timeout
   --help, -h        Show this help
   --version, -v     Show version
 
 Examples:
+  tb doctor                                    # check your install first
   tb open http://localhost:3000
+  tb elements && tb tap 3                      # click without a selector
+  tb -w fhd open https://example.com -e c      # crisp screenshots need fhd + chromium
   tb screenshot ./page.png
-  tb click "button.submit"
-  tb text
-  tb eval "document.querySelectorAll('a').length"
+  tb extract '{"title":"h1","img":"img@src"}'
   tb --json open http://example.com
+
+  tb extension install && tb use chrome        # drive your own logged-in Chrome
+  tb tabs && tb attach 2 -n shop
+
+  tb open https://site.com --visible -e c -n s --new
+  tb --session s harvest urls.txt --schema '{"t":"h1"}' --out d.jsonl --jitter 3,7
 `);
     return;
   }
@@ -973,52 +1070,264 @@ Examples:
           output(jsonMode ? { path: extDir } : extDir);
           break;
         }
-        if (sub !== "install") die("Usage: tb extension install");
 
-        // The daemon has to be listening before Chrome tries to dial it.
-        await ensureDaemon();
+        if (sub === "status") {
+          await ensureDaemon();
+          const st = (await daemonFetch("/bridges")) as { bridges: Array<{ label: string; connectedAt: string }> };
+          if (jsonMode) { output({ path: extDir, bridges: st.bridges }); break; }
+          if (!st.bridges.length) {
+            console.log(`No Chrome profile is connected.\n\nRun \x1b[1mtb extension install\x1b[0m to connect one.`);
+          } else {
+            for (const b of st.bridges) console.log(`  \x1b[32m●\x1b[0m ${b.label}   \x1b[2mconnected ${timeAgo(new Date(b.connectedAt))}\x1b[0m`);
+            console.log(`\n${st.bridges.length} profile(s) connected. Target one with \x1b[1m--bridge <name>\x1b[0m.`);
+          }
+          break;
+        }
 
-        const already = (await daemonFetch("/bridges")) as { bridges: Array<{ label: string }> };
-        if (already.bridges.length) {
-          output(
-            jsonMode
-              ? { ok: true, bridges: already.bridges }
-              : `Already connected: ${already.bridges.map(b => b.label).join(", ")}`,
+        if (sub === "uninstall" || sub === "remove") {
+          console.log(
+            `\nTo disconnect tb from Chrome:\n\n` +
+              `  \x1b[1mTemporarily\x1b[0m — just stop routing through it:\n` +
+              `     \x1b[36mtb use tb\x1b[0m\n\n` +
+              `  \x1b[1mFully\x1b[0m — remove the extension:\n` +
+              `     1. Open \x1b[1mchrome://extensions\x1b[0m\n` +
+              `     2. Find \x1b[1mtb bridge\x1b[0m and click \x1b[1mRemove\x1b[0m\n` +
+              `     3. Repeat in each profile you loaded it into (\x1b[36mtb bridges\x1b[0m lists them)\n\n` +
+              `Nothing else to clean up — tb stores no data in your browser.\n`,
           );
           break;
         }
 
-        // Chrome blocks programmatic unpacked installs and refuses chrome://
-        // URLs from the command line, so this is genuinely a manual step.
-        try {
-          const { execSync } = await import("child_process");
-          execSync("pbcopy", { input: extDir });
-        } catch {}
-        console.log(
-          `\nLoad the tb extension into Chrome — no restart needed:\n\n` +
-            `  1. Open \x1b[1mchrome://extensions\x1b[0m\n` +
-            `  2. Turn on \x1b[1mDeveloper mode\x1b[0m (top right)\n` +
-            `  3. Click \x1b[1mLoad unpacked\x1b[0m and pick this folder:\n\n` +
-            `     \x1b[36m${extDir}\x1b[0m   \x1b[2m(copied to your clipboard)\x1b[0m\n\n` +
-            `Load it in whichever profile you want tb to drive — that's how you\n` +
-            `choose the profile. You can load it in more than one.\n\n` +
-            `\x1b[2mWaiting for the extension to connect… (Ctrl-C to stop)\x1b[0m`,
-        );
+        if (sub !== "install") die("Usage: tb extension <install|path|status|uninstall> [--auto] [--browser <name>]");
 
-        const deadline = Date.now() + 180000;
-        let connected: Array<{ label: string }> = [];
-        while (Date.now() < deadline) {
-          await new Promise((r) => setTimeout(r, 1000));
+        // --- install ---------------------------------------------------------
+
+        if (!existsSync(join(extDir, "manifest.json"))) {
+          die(`Extension source is missing at ${extDir}\nYour tb install looks incomplete — re-run the installer.`);
+        }
+
+        // The daemon has to be listening before Chrome tries to dial it: the
+        // extension dials us, never the reverse.
+        await ensureDaemon();
+
+        const bridgeLabels = async (): Promise<string[]> => {
           try {
-            connected = ((await daemonFetch("/bridges")) as { bridges: Array<{ label: string }> }).bridges;
-            if (connected.length) break;
+            const r = (await daemonFetch("/bridges")) as { bridges: Array<{ label: string }> };
+            return r.bridges.map((b) => b.label);
+          } catch {
+            return [];
+          }
+        };
+
+        const waitForBridge = async (ms: number, tick?: (left: number) => void): Promise<string[]> => {
+          const deadline = Date.now() + ms;
+          while (Date.now() < deadline) {
+            const found = await bridgeLabels();
+            if (found.length) return found;
+            tick?.(Math.ceil((deadline - Date.now()) / 1000));
+            await new Promise((r) => setTimeout(r, 1000));
+          }
+          return bridgeLabels();
+        };
+
+        const already = await bridgeLabels();
+        if (already.length) {
+          output(
+            jsonMode
+              ? { ok: true, alreadyInstalled: true, bridges: already }
+              : `\x1b[32m✓\x1b[0m Already connected: \x1b[1m${already.join(", ")}\x1b[0m\n\nNext: \x1b[1mtb tabs\x1b[0m  ·  \x1b[1mtb use chrome\x1b[0m`,
+          );
+          break;
+        }
+
+        // The extension may already be loaded from a previous run and simply
+        // waiting for a daemon to dial. It retries with backoff up to 10s, so
+        // give it a grace window before telling the user to install anything.
+        if (!jsonMode) process.stdout.write("\x1b[2mChecking for an already-loaded tb extension…\x1b[0m");
+        const reconnected = await waitForBridge(12000);
+        if (!jsonMode) process.stdout.write("\r\x1b[K");
+        if (reconnected.length) {
+          output(
+            jsonMode
+              ? { ok: true, alreadyInstalled: true, bridges: reconnected }
+              : `\x1b[32m✓\x1b[0m Extension was already loaded — reconnected: \x1b[1m${reconnected.join(", ")}\x1b[0m\n\nNext: \x1b[1mtb tabs\x1b[0m  ·  \x1b[1mtb use chrome\x1b[0m`,
+          );
+          break;
+        }
+
+        // Which browser are we driving? Chromium-family only — the bridge needs
+        // chrome.debugger, which is a Chromium extension API.
+        const BROWSERS: Array<{ app: string; bin: string; scriptable: boolean }> = [
+          { app: "Google Chrome", bin: "/Applications/Google Chrome.app", scriptable: true },
+          { app: "Brave Browser", bin: "/Applications/Brave Browser.app", scriptable: true },
+          { app: "Microsoft Edge", bin: "/Applications/Microsoft Edge.app", scriptable: true },
+          { app: "Google Chrome Canary", bin: "/Applications/Google Chrome Canary.app", scriptable: true },
+          { app: "Chromium", bin: "/Applications/Chromium.app", scriptable: true },
+          // Arc ships a Chromium core but its AppleScript dictionary has no tab
+          // constructor, so we can only point the user at it.
+          { app: "Arc", bin: "/Applications/Arc.app", scriptable: false },
+        ];
+        const installed = BROWSERS.filter((b) => existsSync(b.bin));
+        const wanted = flags.browser?.toLowerCase();
+        const target =
+          (wanted ? installed.find((b) => b.app.toLowerCase().includes(wanted)) : undefined) ??
+          installed[0];
+
+        if (wanted && !target) {
+          die(`No installed browser matches --browser ${flags.browser}\nFound: ${installed.map((b) => b.app).join(", ") || "none"}`);
+        }
+
+        // Put the path where both the file picker and a paste can reach it.
+        const { execSync, execFileSync } = await import("child_process");
+        let clipped = false;
+        try {
+          execSync("pbcopy", { input: extDir });
+          clipped = true;
+        } catch {}
+
+        // Chrome refuses chrome:// URLs from the command line, but its
+        // AppleScript interface honours them — that is the whole reason this
+        // step can be automated at all on macOS.
+        let opened = false;
+        if (process.platform === "darwin" && target?.scriptable) {
+          const osa = `
+tell application "${target.app}"
+  activate
+  if (count of windows) = 0 then make new window
+  tell front window
+    make new tab with properties {URL:"chrome://extensions"}
+    set active tab index to (count of tabs)
+  end tell
+end tell`;
+          try {
+            execFileSync("osascript", ["-e", osa], { stdio: ["pipe", "pipe", "pipe"], timeout: 15000 });
+            opened = true;
+          } catch {
+            // Browser not running yet, or the user denied automation access in
+            // System Settings › Privacy & Security › Automation.
+            try {
+              execFileSync("open", ["-a", target.app], { timeout: 10000 });
+              await new Promise((r) => setTimeout(r, 2500));
+              execFileSync("osascript", ["-e", osa], { stdio: ["pipe", "pipe", "pipe"], timeout: 15000 });
+              opened = true;
+            } catch {}
+          }
+        }
+
+        // Reveal the folder so "Load unpacked" is a drag or a ⌘V away rather
+        // than a manual walk down the filesystem. Skipped under --auto, which
+        // drives the file picker itself and would only litter the screen.
+        const autoMode = flags.auto === "true";
+        if (process.platform === "darwin" && !autoMode) {
+          try {
+            execFileSync("open", ["-R", extDir], { timeout: 10000 });
           } catch {}
         }
-        if (!connected.length) {
-          die("Timed out waiting for the extension. Re-run 'tb extension install' once it's loaded.");
+
+        // --auto: try to click through Developer mode + Load unpacked via the
+        // accessibility tree. Best effort by design — the handshake below is the
+        // only thing that decides whether this worked, so a miss just means the
+        // user finishes with the printed steps, exactly as without --auto.
+        let autoHint = "";
+        if (autoMode && opened && target) {
+          if (!jsonMode) process.stdout.write(`\x1b[2mDriving ${target.app} for you…\x1b[0m`);
+          const { autoLoadUnpacked, autoInstallHint } = await import("./ext-autoinstall.js");
+          const auto = await autoLoadUnpacked(extDir, target.app);
+          if (!jsonMode) process.stdout.write("\r\x1b[K");
+          if (auto.ok) {
+            const quick = await waitForBridge(15000);
+            if (quick.length) {
+              output(
+                jsonMode
+                  ? { ok: true, auto: true, bridges: quick }
+                  : `\x1b[32m✓\x1b[0m Loaded it for you — connected: \x1b[1m${quick.join(", ")}\x1b[0m\n\n` +
+                      `  \x1b[1mtb tabs\x1b[0m         \x1b[2myour open tabs, numbered\x1b[0m\n` +
+                      `  \x1b[1mtb use chrome\x1b[0m   \x1b[2mroute every command through this browser\x1b[0m\n`,
+              );
+              break;
+            }
+            autoHint = "Clicked through the dialog, but no handshake yet — finish or verify below.";
+          } else {
+            autoHint = autoInstallHint(auto, target.app);
+          }
+          if (process.platform === "darwin") {
+            try {
+              execFileSync("open", ["-R", extDir], { timeout: 10000 });
+            } catch {}
+          }
+        } else if (autoMode && !opened) {
+          autoHint = "Skipped --auto: couldn't open chrome://extensions, so there was nothing to drive.";
         }
-        console.log(`\n\x1b[32m✓\x1b[0m Connected: \x1b[1m${connected.map(b => b.label).join(", ")}\x1b[0m`);
-        console.log(`\nNext: \x1b[1mtb tabs\x1b[0m to see your open tabs, or \x1b[1mtb use chrome\x1b[0m to route everything here.`);
+
+        if (jsonMode) {
+          output({ ok: false, waiting: true, path: extDir, browser: target?.app ?? null, openedExtensionsPage: opened });
+        }
+
+        const b1 = (s: string) => `\x1b[1m${s}\x1b[0m`;
+        const cy = (s: string) => `\x1b[36m${s}\x1b[0m`;
+        const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
+
+        if (!jsonMode) {
+          console.log(
+            `\n${b1("Connect tb to " + (target?.app ?? "your browser"))} — no restart, you stay logged into everything.\n`,
+          );
+          console.log(
+            opened
+              ? `  ${b1("1.")} ${cy("chrome://extensions")} is open in a new tab ${dim("(switched to it)")}`
+              : `  ${b1("1.")} Open ${cy("chrome://extensions")}`,
+          );
+          console.log(`  ${b1("2.")} Turn on ${b1("Developer mode")} ${dim("(toggle, top right)")}`);
+          console.log(`  ${b1("3.")} Click ${b1("Load unpacked")} and choose this folder:\n`);
+          console.log(`       ${cy(extDir)}`);
+          console.log(
+            `       ${dim(
+              (clipped ? "copied to your clipboard — ⌘V in the file picker" : "select it in the picker") +
+                (process.platform === "darwin" ? ", or drag it in from the Finder window that just opened" : ""),
+            )}\n`,
+          );
+          if (autoHint) {
+            console.log(`  \x1b[33m!\x1b[0m ${autoHint.split("\n").join("\n  ")}\n`);
+          }
+          if (!opened && process.platform === "darwin" && target?.scriptable) {
+            console.log(
+              `  ${dim("(Couldn't open the tab for you — if macOS asked for Automation permission,")}\n` +
+                `  ${dim(" allow it in System Settings › Privacy & Security › Automation and re-run.)")}\n`,
+            );
+          }
+          console.log(
+            `${dim("The extension is loaded PER PROFILE — whichever profile that window belongs to")}\n` +
+              `${dim("is the one tb will drive. Load it in several and pick with --bridge <name>.")}\n`,
+          );
+        }
+
+        const spin = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+        let f = 0;
+        const connected = await waitForBridge(180000, (left) => {
+          if (jsonMode) return;
+          process.stdout.write(`\r\x1b[K${dim(`${spin[f++ % spin.length]} waiting for the handshake… ${left}s`)}`);
+        });
+        if (!jsonMode) process.stdout.write("\r\x1b[K");
+
+        if (!connected.length) {
+          die(
+            `Timed out waiting for the extension.\n\n` +
+              `Check:\n` +
+              `  • Is "tb bridge" listed and ${b1("enabled")} in chrome://extensions?\n` +
+              `  • Developer mode still on? Chrome disables unpacked extensions without it.\n` +
+              `  • Anything else bound to ports 17373-17375? tb and the extension agree on\n` +
+              `    that range and nothing else.\n\n` +
+              `Then re-run: ${b1("tb extension install")}`,
+          );
+        }
+
+        output(
+          jsonMode
+            ? { ok: true, bridges: connected }
+            : `\x1b[32m✓\x1b[0m Connected: ${b1(connected.join(", "))}\n\n` +
+                `  ${b1("tb tabs")}         ${dim("your open tabs, numbered")}\n` +
+                `  ${b1("tb attach 2")}     ${dim("drive one of them")}\n` +
+                `  ${b1("tb use chrome")}   ${dim("route every command through this browser")}\n`,
+        );
         break;
       }
 

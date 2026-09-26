@@ -156,8 +156,24 @@ tb --session shop extract '{"price":".price"}'
 tb open https://site.com/item -n new     # or open a fresh tab in your window
 ```
 
+`tb extension install` does everything it can for you: it opens `chrome://extensions`
+in your browser, copies the extension path to your clipboard, reveals the folder in
+Finder, and then waits for the handshake. You click **Load unpacked** — Chrome allows
+no programmatic unpacked install, so that one step is yours.
+
+Add **`--auto`** and it will try to do even that: flip the Developer mode toggle and
+click through the file picker using macOS accessibility. That needs Accessibility
+permission for your terminal (System Settings › Privacy & Security › Accessibility),
+and it's best effort — if Chrome's UI has shifted, you simply get the manual steps
+back and lose nothing. It only ever matters once, since Developer mode is a persistent
+per-profile setting. Re-running the command is
+always safe: if the extension is already loaded it simply reconnects, which makes it
+the right thing to run after a reboot too.
+
 The extension is loaded **per Chrome profile**, and that's how you pick one — load it
-in the profile you want, or in several and choose with `--bridge <name>`.
+in the profile you want, or in several and choose with `--bridge <name>`. Works with
+Chrome, Brave, Edge, Chrome Canary and Chromium; pick with `--browser <name>` when you
+have several.
 
 Two rules worth knowing: tb never closes a tab it didn't open (`tb kill` just detaches
 from yours), and `tb stop` never touches your browser. Attached tabs show Chrome's
@@ -293,7 +309,11 @@ tb stop                                # Stop daemon + all engines
 ### Your Own Browser (Extension Bridge)
 ```bash
 tb extension install                   # Load the bridge into Chrome (one time, no restart)
+tb extension install --auto            # Also click Developer mode + Load unpacked for you
+tb extension install --browser brave   # Pick which Chromium-family browser
+tb extension status                    # Which profiles are connected, and since when
 tb extension path                      # Print the folder to load unpacked
+tb extension uninstall                 # How to remove it
 tb bridges                             # Which Chrome profiles are connected
 tb use chrome                          # Route every command through your browser
 tb use tb                              # Back to tb's own throwaway browser
@@ -331,7 +351,7 @@ tb --json ps
 Use `tb` as a Node.js/TypeScript library in your apps:
 
 ```typescript
-import { tb } from 'tiny-browser'
+import { tb } from 'terminal-browser'
 
 // Open a page (starts daemon automatically)
 const page = await tb.open('http://localhost:3000')

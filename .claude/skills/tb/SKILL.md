@@ -4,7 +4,7 @@ description: Headless browser for AI agents — navigate, screenshot, interact w
 user-invocable: true
 ---
 
-# tb — tiny browser skill
+# tb — terminal browser skill
 
 Use `tb` to browse websites, take screenshots, fill forms, and interact with page elements.
 The number system lets you see and click elements without knowing CSS selectors.
@@ -53,7 +53,11 @@ tb screenshot /tmp/page.png       # Take screenshot
 | `tb ps` | List active sessions (shows names) |
 | `tb kill <id-or-name>` | Kill a session |
 | `tb stop` | Stop daemon and all engines |
-| `tb extension install` | Connect tb to the user's own Chrome (one time, no restart) |
+| `tb extension install` | Connect tb to the user's own Chrome (one time, no restart). Opens `chrome://extensions` for them and waits for the handshake |
+| `tb extension install --auto` | Also attempts the Developer-mode toggle + Load-unpacked click via macOS accessibility. Best effort; needs Accessibility permission |
+| `tb extension status` | Which profiles are connected, and how long they've been up |
+| `tb extension path` | Print the folder to load unpacked |
+| `tb extension uninstall` | How to remove it |
 | `tb bridges` | Which Chrome profiles are connected |
 | `tb use chrome` / `tb use tb` | Route commands through their browser, or back to tb's |
 | `tb tabs` | List tabs they already have open, numbered |
@@ -144,7 +148,14 @@ A throwaway browser is logged into nothing. The extension bridge relays CDP into
 Chrome the user is already running, so their cookies, sessions, and extensions all apply.
 
 ```bash
-tb extension install      # one time, no Chrome restart (user loads it by hand)
+tb extension install      # one time, no Chrome restart
+                          # opens chrome://extensions, copies the path to the
+                          # clipboard, reveals the folder in Finder, then waits
+                          # for the extension to dial in. The user still clicks
+                          # "Load unpacked" — Chrome allows no way around that.
+                          # Re-running it is safe: if the extension is already
+                          # loaded it just reconnects.
+tb extension status       # is a profile connected right now?
 tb use chrome             # route everything through their browser
 tb tabs                   # tabs they already have open
 tb attach 2 -n shop       # drive an existing tab
@@ -353,7 +364,7 @@ tb --json ps
 
 **Elements missing from `tb elements`** — only visible, non-hidden elements with text are listed. Interactive divs with `onClick` but no `role="button"` may be missed. Use `tb eval` to find and click them directly.
 
-**"No tb extension is connected"** — the bridge isn't loaded, or Chrome is closed. Have the user run `tb extension install`. It's a manual load (Chrome blocks programmatic unpacked installs), so you can't do it for them.
+**"No tb extension is connected"** — the bridge isn't loaded, or Chrome is closed. Run `tb extension install`. It does everything it can automatically (opens `chrome://extensions`, clipboards the path, reveals the folder, waits for the handshake), but the final **Load unpacked** click is the user's — Chrome permits no programmatic unpacked install. Re-running it when the extension is already loaded is safe and just reconnects, so it is also the right fix after a reboot.
 
 **"Could not attach to tab N"** — Chrome allows one debugger per tab. Something else holds it: DevTools is open on that tab, or another automation tool. Close DevTools and retry, or pick a different tab.
 
