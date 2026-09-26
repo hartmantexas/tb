@@ -1,7 +1,7 @@
 {
-  "name": "tiny-browser",
+  "name": "terminal-browser",
   "version": "0.1.0",
-  "description": "Agent-first browser. Lightpanda for speed, Chromium for pixels.",
+  "description": "terminal browser — an agent-first browser you drive from the command line. Lightpanda for speed, Chromium for pixels, your own Chrome for logins.",
   "type": "module",
   "bin": {
     "tb": "./bin/tb"
@@ -22,7 +22,7 @@
   "author": "",
   "repository": {
     "type": "git",
-    "url": "https://github.com/user/tiny-browser"
+    "url": "git+https://github.com/hartmantexas/tb.git"
   },
   "engines": {
     "bun": ">=1.0.0"
@@ -40,7 +40,12 @@
     "chromium",
     "cdp",
     "automation",
-    "screenshot"
+    "screenshot",
+    "terminal-browser",
+    "cli",
+    "ai-agent",
+    "scraping",
+    "chrome-devtools-protocol"
   ],
   "license": "MIT",
   "dependencies": {
@@ -48,5 +53,9 @@
     "@takumi-rs/core": "^1.1.2",
     "satori": "^0.26.0",
     "satori-html": "^0.3.2"
+  },
+  "homepage": "https://github.com/hartmantexas/tb#readme",
+  "bugs": {
+    "url": "https://github.com/hartmantexas/tb/issues"
   }
 }

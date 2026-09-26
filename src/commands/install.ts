@@ -119,7 +119,6 @@ async function installLightpanda(): Promise<void> {
   console.log(`Downloading Lightpanda v0.3.0 for ${platform.label}...`);
 
   // Download from GitHub releases
-  const releaseUrl = "https://github.com/user/tiny-browser/releases/latest";
   const downloadUrl = `https://github.com/lightpanda-io/browser/releases/latest/download/lightpanda-${platform.assetSuffix}`;
 
   try {

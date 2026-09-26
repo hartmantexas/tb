@@ -1,8 +1,8 @@
 /**
- * tiny-browser — Agent-first browser. Lightpanda for speed, Chromium for pixels.
+ * terminal-browser — an agent-first browser you drive from the command line. Lightpanda for speed, Chromium for pixels.
  *
  * Usage:
- *   import { tb } from 'tiny-browser'
+ *   import { tb } from 'terminal-browser'
  *
  *   const page = await tb.open('http://localhost:3000')
  *   console.log(await page.title())

@@ -3,7 +3,7 @@
 ## Setup
 
 ```bash
-git clone https://github.com/user/tiny-browser && cd tiny-browser
+git clone https://github.com/hartmantexas/tb && cd tb
 bun install
 bun run dev help        # test CLI
 tb install              # install lightpanda
@@ -21,7 +21,7 @@ src/
 ├── render-worker.ts    # Subprocess worker for crash-safe rendering
 ├── config.ts           # ~/.tb/config.json management
 ├── server.ts           # HTTP API server (tb serve)
-├── index.ts            # Library API (import { tb } from 'tiny-browser')
+├── index.ts            # Library API (import { tb } from 'terminal-browser')
 ├── utils.ts            # Shared utilities
 ├── commands/
 │   └── install.ts      # Engine installation logic

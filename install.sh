@@ -34,7 +34,7 @@ fi
 command -v bun >/dev/null 2>&1 && ok "bun $(bun --version)" || { err "bun install failed"; exit 1; }
 
 # 2. source: use current checkout, or clone -----------------------------------
-if [ -f "./package.json" ] && grep -q '"name": *"tiny-browser"' package.json 2>/dev/null; then
+if [ -f "./package.json" ] && grep -qE '"name": *"(terminal-browser|tiny-browser)"' package.json 2>/dev/null; then
   TB_SRC="$(pwd)"
   log "Using current checkout: $TB_SRC"
 elif [ -d "$TB_SRC/.git" ]; then
