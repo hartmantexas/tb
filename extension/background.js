@@ -63,6 +63,34 @@ function debuggerSend(tabId, method, params) {
   });
 }
 
+/**
+ * Rebuild `attached` after a service-worker respawn.
+ *
+ * MV3 tears this worker down whenever it likes, taking the in-memory Set with
+ * it. Without this, the next command re-attaches a tab Chrome already has us
+ * attached to — wasted work, and on some Chrome versions a second "started
+ * debugging" banner on a tab the user already approved.
+ *
+ * getTargets reports whether *a* debugger is attached, not whether it is ours,
+ * so this is an optimistic hint only. The cdp handler below retries an attach
+ * if a command comes back "not attached", which is what makes the guess safe.
+ */
+function syncAttached() {
+  return new Promise((resolve) => {
+    try {
+      chrome.debugger.getTargets((targets) => {
+        void chrome.runtime.lastError;
+        for (const t of targets || []) {
+          if (t.attached && t.tabId !== undefined) attached.add(t.tabId);
+        }
+        resolve();
+      });
+    } catch {
+      resolve();
+    }
+  });
+}
+
 function queryTabs() {
   return new Promise((resolve) => {
     chrome.tabs.query({}, (tabs) => {
@@ -123,7 +151,20 @@ async function handle(msg) {
         // Attach lazily: the daemon may be resuming a session whose attachment
         // died with a previous service-worker generation.
         if (!attached.has(msg.tabId)) await debuggerAttach(msg.tabId);
-        result = await debuggerSend(msg.tabId, msg.method, msg.params);
+        try {
+          result = await debuggerSend(msg.tabId, msg.method, msg.params);
+        } catch (err) {
+          // Our record said attached and Chrome disagrees. Attach once and
+          // retry instead of surfacing a protocol error the caller can do
+          // nothing with. This is what lets syncAttached() guess optimistically.
+          if (/not attached/i.test(err && err.message ? err.message : "")) {
+            attached.delete(msg.tabId);
+            await debuggerAttach(msg.tabId);
+            result = await debuggerSend(msg.tabId, msg.method, msg.params);
+          } else {
+            throw err;
+          }
+        }
         break;
 
       case "tabs": {
@@ -197,8 +238,10 @@ function connect() {
     ws = socket;
     connecting = false;
     backoffMs = 500;
+    // Learn what we're still attached to before the daemon sends any command.
+    await syncAttached();
     const [email, tabs] = await Promise.all([profileEmail(), queryTabs()]);
-    send({ type: "hello", email, tabCount: tabs.length });
+    send({ type: "hello", email, tabCount: tabs.length, attached: Array.from(attached) });
   };
 
   socket.onmessage = (ev) => {

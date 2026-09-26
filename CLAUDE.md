@@ -122,6 +122,51 @@ times out. That design forces the user to quit Chrome first. The extension does 
   throttle can attach to the account and not just the IP. Point `tb harvest` at a bridge
   session deliberately.
 
+## Background tabs, parallelism, and the debugger banner
+
+**Chrome throttles tabs nobody is looking at, and it used to silently cap tb.**
+Timers clamp, `requestAnimationFrame` stops dead, renderers are deprioritised, and
+occluded windows get backgrounded. Symptom: a session only seems to make progress while
+its tab happens to be in front, and N sessions in one window behave like one.
+
+Two different fixes, because the two engines have different powers:
+
+- **tb's own Chromium** gets the launch flags, which is the complete fix:
+  `--disable-background-timer-throttling`, `--disable-renderer-backgrounding`,
+  `--disable-backgrounding-occluded-windows` (`src/engines/chromium.ts`).
+- **The extension bridge cannot** — those are launch-time flags and the user's Chrome is
+  already running. `Session.keepAwake()` does what CDP allows instead:
+  `Emulation.setFocusEmulationEnabled` (so `document.hasFocus()` stays true and
+  focus-gated UI doesn't collapse) and `Page.setWebLifecycleState: "active"` (so the tab
+  isn't frozen or discarded). Called at `init()` and again after every `goto`, since a
+  new document can land back in a throttled state.
+
+Measured after the change, on a session sitting behind another: **60.2 fps rAF,
+`document.hidden` false, `hasFocus` true.** Before, a backgrounded tab stopped painting.
+
+**Sessions are genuinely concurrent — don't add a lock.** Each `tb` invocation is its own
+process on its own socket, the daemon serves them concurrently, and `Bridge.request`
+multiplexes over one WebSocket by message id. Two sessions each running a 3s task
+complete in 3.06s wall clock, not 6s. Verify that number before "optimising" anything in
+this path.
+
+**What keepAwake does not fix:** a fully hidden tab is still not composited, so pixel
+capture of one can come back stale. If you need to *watch* several render at once, put
+them in separate windows (`--group`) and tile them — that is what groups are for.
+
+**The "tb started debugging this browser" banner is Chrome's, not ours.** It cannot be
+removed from inside an extension; `chrome.debugger` always announces itself. What *was*
+fixable is redundant re-attaching: MV3 kills the service worker and took the in-memory
+`attached` Set with it, so the next command re-attached a tab Chrome already had.
+`syncAttached()` now rebuilds that set from `chrome.debugger.getTargets()` on reconnect.
+Because `getTargets` reports whether *a* debugger is attached rather than whether *ours*
+is, the `cdp` handler retries an attach once on "not attached" — that retry is what makes
+the optimistic guess safe. Do not remove one without the other.
+
+The only true suppression is the `SilentDebuggerExtensionAPI` enterprise policy, which
+needs a managed preference and a Chrome restart. Out of scope for install; mention it,
+never do it silently to someone's browser.
+
 ## Hard-won caveats
 
 **Don't match error strings loosely.** `cli.ts`'s global handler used to treat any

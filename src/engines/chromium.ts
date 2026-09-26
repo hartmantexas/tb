@@ -360,6 +360,16 @@ export class ChromiumEngine implements Engine {
       "--disable-default-apps",
       "--disable-sync",
       "--disable-translate",
+      // Chrome throttles tabs it thinks nobody is looking at: timers clamped,
+      // rAF stopped, renderers deprioritised, occluded windows backgrounded.
+      // Correct for browsing, ruinous for automation — it is why a session only
+      // seems to make progress while its tab happens to be in front. tb owns
+      // this browser, so it can simply turn all three off. (The extension
+      // bridge cannot: those are launch-time flags and the user's Chrome is
+      // already running. Session.keepAwake() does what it can there instead.)
+      "--disable-background-timer-throttling",
+      "--disable-renderer-backgrounding",
+      "--disable-backgrounding-occluded-windows",
       "--mute-audio",
       "--autoplay-policy=no-user-gesture-required",
       "--no-first-run",

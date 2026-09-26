@@ -328,6 +328,16 @@ tb <cmd> --bridge <profile>            # Pick a profile when several are connect
 `tb attach 2`, `tb attach aliexpress`, and `tb --tab aliexpress title` are all the same
 kind of lookup — a number from `tb tabs`, or any substring of a tab's title or URL.
 
+Attach a whole fleet in one go with `tb attach 1,3,7`, `tb attach 2-6`, or
+`tb attach --all`. Each tab becomes its own named session and they work **in parallel,
+in the background, while you use other tabs** — tb tells Chrome to treat every attached
+tab as focused and to leave it unfrozen, so timers and animation frames keep running at
+full rate instead of being throttled to a crawl. Watch them all with `tb cc`.
+
+One caveat: a fully hidden tab still isn't composited, so a screenshot of one can come
+back stale. If you want to *see* several render at once, put them in separate windows
+with `--group` and tile those.
+
 ### JSON Mode (for agents)
 
 Every command supports `--json` for structured output:

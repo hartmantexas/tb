@@ -316,6 +316,54 @@ async function resolveTab(spec: string): Promise<BridgeTab> {
   return hits[0];
 }
 
+/**
+ * Resolve a spec to MANY tabs, for attaching a fleet in one go.
+ * Accepts "1,3,7", "--all", or a substring that is allowed to match several —
+ * the opposite of resolveTab, which treats an ambiguous match as an error.
+ */
+async function resolveTabs(spec: string | undefined, all: boolean): Promise<BridgeTab[]> {
+  const { tabs } = await fetchTabs();
+  if (!tabs.length) die("No tabs available in that Chrome profile.");
+  if (all) return tabs;
+
+  const parts = (spec ?? "").split(",").map((p) => p.trim()).filter(Boolean);
+  const picked: BridgeTab[] = [];
+  const seen = new Set<number>();
+
+  for (const part of parts) {
+    if (/^\d+$/.test(part)) {
+      const t = tabs[parseInt(part, 10) - 1];
+      if (!t) die(`No tab ${part}. Run 'tb tabs' — there are ${tabs.length}.`);
+      if (!seen.has(t.tabId)) { seen.add(t.tabId); picked.push(t); }
+      continue;
+    }
+    if (/^(\d+)-(\d+)$/.test(part)) {
+      const [, a, b] = part.match(/^(\d+)-(\d+)$/)!;
+      for (let i = parseInt(a, 10); i <= parseInt(b, 10); i++) {
+        const t = tabs[i - 1];
+        if (t && !seen.has(t.tabId)) { seen.add(t.tabId); picked.push(t); }
+      }
+      continue;
+    }
+    const needle = part.toLowerCase();
+    const hits = tabs.filter(
+      (t) => t.title.toLowerCase().includes(needle) || t.url.toLowerCase().includes(needle),
+    );
+    if (!hits.length) die(`No open tab matches "${part}". Run 'tb tabs' to see them.`);
+    for (const t of hits) if (!seen.has(t.tabId)) { seen.add(t.tabId); picked.push(t); }
+  }
+
+  if (!picked.length) die("Nothing to attach. Give tab numbers, a substring, or --all.");
+  return picked;
+}
+
+/** Short, filesystem-and-shell-safe session name derived from a tab. */
+function tabSlug(t: BridgeTab, i: number): string {
+  const base = (t.title || t.url || "").toLowerCase();
+  const slug = base.replace(/https?:\/\//, "").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 20);
+  return slug || `tab${i + 1}`;
+}
+
 async function getSession(needsScreenshot = false): Promise<string> {
   // --session flag: use a specific session (by ID or name)
   if (flags.session) {
@@ -537,6 +585,10 @@ Your own Chrome (the extension bridge):
   tabs                    Tabs you already have open, numbered
   attach <n|title|url>    Bind a session to a tab that's already open
                           (a number from tabs, or any substring of its title or URL)
+  attach 1,3,7            Attach a fleet at once — also 2-6 (range) or --all.
+                          Each becomes its own named session and they run in
+                          parallel, in the background, while you use other tabs.
+                          Name them with -n <prefix> (prefix1, prefix2, …)
 
   tb never closes a tab it didn't open — kill just detaches from yours.
   tb stop never touches your browser.
@@ -546,6 +598,12 @@ Sessions, groups, daemon:
   every session shares one cookie jar, one fingerprint, one IP — parallel fan-out
   multiplies bot-detection risk without isolating anything. Sessions are not
   garbage collected; kill them when done.
+
+  Sessions keep working while you are on some other tab: tb tells Chrome to
+  treat each attached tab as focused and to leave it unfrozen, so timers and
+  rAF keep running instead of being throttled to a crawl. A fully hidden tab is
+  still not composited, though — if you want to WATCH several render at once,
+  put them in separate windows with --group and tile those.
 
   ps                      List active sessions
   kill <id-or-name>       Kill one session
@@ -579,6 +637,7 @@ Flags:
                     (chrome, brave, edge, canary, chromium)
   --auto            extension install: attempt the Developer-mode toggle and the
                     Load-unpacked click via macOS accessibility (best effort)
+  --all             attach: bind a session to every open tab
   --group <name>    Target or assign a group (window)
   --json            Structured output — use this for anything programmatic
   --visible         Headful window. THE anti-bot escape hatch: some sites fingerprint
@@ -1372,24 +1431,92 @@ end tell`;
 
       case "attach": {
         const spec = positional[0];
-        if (!spec) die("Usage: tb attach <number|title|url> [-n name]");
+        const attachAll = flags.all === "true";
+        if (!spec && !attachAll) {
+          die(
+            "Usage: tb attach <number|title|url> [-n name]\n" +
+              "       tb attach 1,3,7 | tb attach 2-6 | tb attach --all   (attach a fleet)",
+          );
+        }
         await ensureDaemon();
-        const tab = await resolveTab(spec);
+
+        const multi = attachAll || /[,]/.test(spec ?? "") || /^\d+-\d+$/.test(spec ?? "");
         const name = flags.name || flags.n;
-        const result = (await daemonFetch("/session/create", {
-          method: "POST",
-          body: {
-            engine: "extension",
-            tabId: tab.tabId,
-            ...(name ? { name } : {}),
-            ...(flags.group ? { group: flags.group } : {}),
-            ...(flags.bridge ? { bridge: flags.bridge } : {}),
-          },
-        })) as { sessionId: string; tabId: number };
-        output(
-          jsonMode
-            ? { sessionId: result.sessionId, tabId: result.tabId, name }
-            : `Attached to "${tab.title || tab.url}"${name ? ` as ${name}` : ""} (session ${result.sessionId.slice(0, 8)})`,
+
+        if (!multi) {
+          const tab = await resolveTab(spec!);
+          const result = (await daemonFetch("/session/create", {
+            method: "POST",
+            body: {
+              engine: "extension",
+              tabId: tab.tabId,
+              ...(name ? { name } : {}),
+              ...(flags.group ? { group: flags.group } : {}),
+              ...(flags.bridge ? { bridge: flags.bridge } : {}),
+            },
+          })) as { sessionId: string; tabId: number };
+          output(
+            jsonMode
+              ? { sessionId: result.sessionId, tabId: result.tabId, name }
+              : `Attached to "${tab.title || tab.url}"${name ? ` as ${name}` : ""} (session ${result.sessionId.slice(0, 8)})`,
+          );
+          break;
+        }
+
+        // Fleet attach. Sessions are independent once created, so bind them
+        // concurrently rather than paying one round trip per tab.
+        const targets = await resolveTabs(spec, attachAll);
+        const results = await Promise.all(
+          targets.map(async (t, i) => {
+            const sessionName = name ? `${name}${i + 1}` : tabSlug(t, i);
+            try {
+              const r = (await daemonFetch("/session/create", {
+                method: "POST",
+                body: {
+                  engine: "extension",
+                  tabId: t.tabId,
+                  name: sessionName,
+                  ...(flags.group ? { group: flags.group } : {}),
+                  ...(flags.bridge ? { bridge: flags.bridge } : {}),
+                },
+              })) as { sessionId: string; tabId: number };
+              return { ok: true as const, name: sessionName, tab: t, sessionId: r.sessionId };
+            } catch (err) {
+              // One tab refusing (DevTools open on it, say) must not sink the
+              // rest of the fleet.
+              return {
+                ok: false as const,
+                name: sessionName,
+                tab: t,
+                error: err instanceof Error ? err.message : String(err),
+              };
+            }
+          }),
+        );
+
+        const good = results.filter((r) => r.ok);
+        const bad = results.filter((r) => !r.ok);
+
+        if (jsonMode) {
+          output({
+            attached: good.map((r) => ({ name: r.name, tabId: r.tab.tabId, sessionId: (r as { sessionId: string }).sessionId, title: r.tab.title })),
+            failed: bad.map((r) => ({ name: r.name, tabId: r.tab.tabId, error: (r as { error: string }).error })),
+          });
+          break;
+        }
+
+        for (const r of good) {
+          console.log(`  \x1b[32m●\x1b[0m \x1b[1m${r.name}\x1b[0m  \x1b[2m${(r.tab.title || r.tab.url).slice(0, 56)}\x1b[0m`);
+        }
+        for (const r of bad) {
+          console.log(`  \x1b[31m○\x1b[0m \x1b[1m${r.name}\x1b[0m  \x1b[2m${(r as { error: string }).error.slice(0, 70)}\x1b[0m`);
+        }
+        console.log(
+          `\n${good.length} attached${bad.length ? `, ${bad.length} failed` : ""}. ` +
+            `They run in parallel in the background.\n` +
+            `  \x1b[1mtb cc\x1b[0m                 \x1b[2mwatch them all in one grid\x1b[0m\n` +
+            `  \x1b[1mtb --session <name>\x1b[0m   \x1b[2mdrive one\x1b[0m\n` +
+            `  \x1b[1mtb kill-all\x1b[0m           \x1b[2mdetach from all of them\x1b[0m`,
         );
         break;
       }

@@ -367,6 +367,8 @@ export class Session {
         this.cdp.send("DOM.enable"),
       ]);
 
+      await this.keepAwake();
+
       // Real Chrome, real profile, real user agent — nothing below applies.
       // Pinning CHROME_VERSION over a browser that auto-updates would sooner or
       // later contradict the actual UA, and the patches would de-native
@@ -734,7 +736,41 @@ export class Session {
 
     const currentUrl = await this.url();
     const { blocked } = await this.isBlocked();
+    // A fresh document can land back in a throttled lifecycle state, so
+    // re-assert it rather than assume the init-time call still holds.
+    await this.keepAwake();
+
     return { status: mainStatus, url: currentUrl, blocked };
+  }
+
+  /**
+   * Make a backgrounded tab behave like a focused one.
+   *
+   * Chrome throttles tabs the user isn't looking at, hard: timers are clamped to
+   * once a minute, requestAnimationFrame stops entirely, and the tab can be
+   * frozen or discarded outright. That is correct for browsing and ruinous for
+   * automation — it is the reason a session appears to "work" only while its tab
+   * happens to be in front, and why several sessions in one window can't make
+   * progress at the same time.
+   *
+   *   Emulation.setFocusEmulationEnabled — document.hasFocus() stays true and
+   *     :focus-within keeps matching, so focus-gated UI (dropdowns, rich text
+   *     editors, anything that closes on blur) doesn't collapse under us.
+   *   Page.setWebLifecycleState "active" — opts the tab out of being frozen or
+   *     discarded while it sits in the background.
+   *
+   * Best effort on purpose: Lightpanda implements neither, and both are no-ops
+   * rather than errors on a foreground tab. Never let this fail a command.
+   *
+   * What this does NOT fix: a fully hidden tab still isn't composited, so pixel
+   * capture of one can come back stale. Put parallel sessions in separate
+   * windows (`--group`) if you need to watch them render.
+   */
+  async keepAwake(): Promise<void> {
+    await Promise.allSettled([
+      this.cdp.send("Emulation.setFocusEmulationEnabled", { enabled: true }),
+      this.cdp.send("Page.setWebLifecycleState", { state: "active" }),
+    ]);
   }
 
   async reload(): Promise<void> {

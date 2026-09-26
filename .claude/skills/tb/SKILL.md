@@ -58,6 +58,7 @@ tb screenshot /tmp/page.png       # Take screenshot
 | `tb extension status` | Which profiles are connected, and how long they've been up |
 | `tb extension path` | Print the folder to load unpacked |
 | `tb extension uninstall` | How to remove it |
+| `tb attach 1,3,7` / `--all` | Attach a fleet of tabs at once; each gets its own named session and they run in parallel |
 | `tb bridges` | Which Chrome profiles are connected |
 | `tb use chrome` / `tb use tb` | Route commands through their browser, or back to tb's |
 | `tb tabs` | List tabs they already have open, numbered |
